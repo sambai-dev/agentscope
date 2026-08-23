@@ -3,6 +3,13 @@
 //! Semantics: patterns and texts are split on `/`; `**` matches zero or more
 //! whole path segments; `*` matches zero or more characters within one
 //! segment; `?` matches exactly one character. Matching is case-sensitive.
+//!
+//! SYNC NOTICE: this matcher is deliberately duplicated as vanilla-JS in
+//! `asg-api/assets/index.html` (`globMatch`, next to `normalizePath`) so the
+//! dashboard's secret preview matches server-side policy evaluation without
+//! any build step or JS tooling. THE TWO COPIES MUST CHANGE TOGETHER: if you
+//! touch matching semantics here, update the JS copy AND its adjacent
+//! conformance-vector comment in the same commit.
 
 /// Returns true when `text` is matched by `pattern`.
 pub fn matches(pattern: &str, text: &str) -> bool {
@@ -46,6 +53,36 @@ fn match_chars(p: &[char], t: &[char]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Conformance vectors shared with the JavaScript copy of this matcher
+    /// in `asg-api/assets/index.html` (comment above `globMatch`). These
+    /// exercise every semantic the dashboard relies on: `**` leading/trailing,
+    /// `*` within one segment but never across `/`, `?` exactly-one-char,
+    /// literal mismatches and segment-boundary behavior. Keep the JS list
+    /// byte-identical so divergence stays greppable.
+    const DASHBOARD_CONFORMANCE_VECTORS: &[(&str, &str, bool)] = &[
+        ("**/.env", "deep/nested/dir/.env", true),
+        (".ssh/**", ".ssh/id_rsa", true),
+        (".ssh/**", "etc/passwd", false),
+        ("*.onion", "evil.onion", true),
+        ("*.onion", "deep/evil.onion", false),
+        ("a/*/c", "a/b/d/c", false),
+        ("file?", "fileAB", false),
+        ("**/*wallet*", "users/bob/wallet.dat", true),
+    ];
+
+    #[test]
+    fn dashboard_js_copy_conformance_vectors() {
+        for (pattern, text, expected) in DASHBOARD_CONFORMANCE_VECTORS {
+            assert_eq!(
+                matches(pattern, text),
+                *expected,
+                "dashboard conformance vector drifted: pattern {:?} vs text {:?}",
+                pattern,
+                text
+            );
+        }
+    }
 
     #[test]
     fn table_driven_cases() {

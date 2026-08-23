@@ -430,11 +430,35 @@ pub fn ingest(st: &Arc<AppState>, event: Event) {
         .observe_ingest_latency_ms(started.elapsed().as_secs_f64() * 1_000.0);
 }
 
+/// Clamps a wall-clock nanosecond reading forward so emitted timestamps never
+/// regress: if `now_ns` is not strictly greater than the last value this
+/// guard handed out (`last_emitted`, shared per time source), we emit
+/// `last + 1` instead. This keeps violation timestamps monotonic even when
+/// the wall clock is broken — e.g. set before 1970, where
+/// `duration_since(UNIX_EPOCH)` would yield 0 and reset event ids to zero.
+fn monotonic_now_ns(now_ns: u64, last_emitted: &AtomicU64) -> u64 {
+    let mut last = last_emitted.load(Ordering::Relaxed);
+    loop {
+        let candidate = now_ns.max(last.saturating_add(1));
+        match last_emitted.compare_exchange_weak(
+            last,
+            candidate,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return candidate,
+            Err(actual) => last = actual,
+        }
+    }
+}
+
 fn event_now_ns() -> u64 {
-    std::time::SystemTime::now()
+    static LAST_EMITTED_NS: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    monotonic_now_ns(now, &LAST_EMITTED_NS)
 }
 
 /// Builds a process forest from flat records, synthesizing placeholder roots
@@ -625,6 +649,23 @@ mod tests {
         let body = healthz_body(State(state)).await;
         assert_eq!(body.0, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body.1["status"], "degraded");
+    }
+
+    #[test]
+    fn monotonic_guard_never_regresses_even_when_clock_does() {
+        let guard = AtomicU64::new(0);
+        // Forward progress passes straight through.
+        assert_eq!(monotonic_now_ns(100, &guard), 100);
+        // A stalled clock (same reading twice) still advances by one.
+        assert_eq!(monotonic_now_ns(100, &guard), 101);
+        assert_eq!(monotonic_now_ns(200, &guard), 200);
+        // Clock appears to go backwards: clamped forward to last + 1.
+        assert_eq!(monotonic_now_ns(150, &guard), 201);
+        // Pre-1970 / zeroed clock must never reset output to 0.
+        assert_eq!(monotonic_now_ns(0, &guard), 202);
+        assert_eq!(monotonic_now_ns(202, &guard), 203);
+        // Real time is honored again once it catches up past the clamp.
+        assert_eq!(monotonic_now_ns(1_000, &guard), 1_000);
     }
 
     async fn healthz_body(st: State<Arc<AppState>>) -> (StatusCode, serde_json::Value) {

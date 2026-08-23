@@ -204,6 +204,24 @@ const EVENT_CAP = 400;
 
 const $ = (id) => document.getElementById(id);
 
+// SYNC NOTICE: globMatch + normalizePath below are a deliberate hand-port of
+// the Rust matcher in asg-policy/src/glob.rs (`matches`) plus its path
+// normalization in asg-policy/src/rules.rs (`normalize_path`). The copies are
+// KEPT IN SYNC and MUST CHANGE TOGETHER — the dashboard's secret/host
+// highlighting must never drift from server-side policy evaluation, and this
+// file has no build step or JS tooling by design.
+// Conformance vectors asserted on the Rust side by
+// `dashboard_js_copy_conformance_vectors` in asg-policy/src/glob.rs; keep
+// this list byte-identical so future divergence is greppable:
+//   pattern          | input                | expected
+//   **/.env          | deep/nested/dir/.env | true
+//   .ssh/**          | .ssh/id_rsa          | true
+//   .ssh/**          | etc/passwd           | false
+//   *.onion          | evil.onion           | true
+//   *.onion          | deep/evil.onion      | false
+//   a/*/c            | a/b/d/c              | false
+//   file?            | fileAB               | false
+//   **/*wallet*      | users/bob/wallet.dat | true
 function globMatch(pattern, text) {
   const p = pattern.split("/"), t = text.split("/");
   const oneSeg = (pat, txt) => {
@@ -230,6 +248,7 @@ function globMatch(pattern, text) {
   return segs(0, 0);
 }
 
+// Mirrors asg-policy/src/rules.rs `normalize_path` — see SYNC NOTICE above.
 function normalizePath(path) {
   let p = path;
   while (p.startsWith("./")) p = p.slice(2);

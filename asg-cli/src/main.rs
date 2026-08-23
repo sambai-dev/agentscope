@@ -38,7 +38,14 @@ enum Command {
         bpf_path: String,
     },
     /// Feed a JSONL event corpus through the ingest pipeline and exit.
+    ///
+    /// The input file contains one JSON event object per line (blank lines
+    /// are skipped). Each line carries a `"type"` discriminator of
+    /// `proc_exec`, `file_open`, `net_connect` or `cap_escalate`, mirroring
+    /// what the eBPF probes emit; see examples/scenario.jsonl for a full
+    /// corpus.
     Replay {
+        /// Path to a JSONL event file, e.g. --file examples/scenario.jsonl
         #[arg(long)]
         file: String,
     },
