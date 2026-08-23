@@ -64,11 +64,11 @@ PowerShell (Windows):
 
 ```powershell
 cargo run -p asg-cli -- serve
-# dashboard: http://localhost:8100  (simulated source by default)
+# dashboard: http://localhost:8100  (simulated source by default; API binds 0.0.0.0:8100)
 
 curl.exe http://localhost:8100/api/metrics
 curl.exe -X POST http://localhost:8100/v1/events -H "content-type: application/json" `
-  -d '{\"type\":\"file_open\",\"pid\":1,\"tgid\":2,\"comm\":\"cat\",\"path\":\".env\",\"flags\":0,\"ts_ns\":1787356800000000000,\"is_write_hint\":false}'
+  -d '{"type":"file_open","pid":1,"tgid":2,"comm":"cat","path":".env","flags":0,"ts_ns":1787356800000000000,"is_write_hint":false}'
 ```
 
 bash (Linux/macOS):
@@ -118,12 +118,12 @@ Single-file vanilla JS (no CDN dependencies), served from the binary via `includ
 
 ## Benchmarks
 
-Run `cargo run -p asg-cli --bin bench --release` (percentiles are per-op nanoseconds; numbers below from the v0.1.0 run on a Windows dev laptop — re-run for your hardware):
+Run `cargo run -p asg-cli --bin bench --release` (percentiles are per-op nanoseconds; numbers below from a fresh run on a Windows dev box, release build, 12 rounds, 2026-08-24):
 
 | op           |       n |   p50 |   p95 |   p99 | ops/s |
 |--------------|---------|-------|-------|-------|-------|
-| policy_eval  | 100_000 | 1,584 | 1,832 | 1,916 | ~621k |
-| glob_match   | 200_000 | 1,243 | 1,346 | 1,356 | ~884k |
+| policy_eval  | 100_000 | 1,322 | 1,332 | 1,354 | ~756k |
+| glob_match   | 200_000 |   661 |   664 |   664 | ~1.5M |
 
 Full methodology and history in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 

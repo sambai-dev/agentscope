@@ -51,7 +51,10 @@ impl Metrics {
     }
 
     pub fn observe_ingest_latency_ms(&self, ms: f64) {
-        let mut samples = self.ingest_latency_ms_samples.lock().unwrap();
+        let mut samples = self
+            .ingest_latency_ms_samples
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if samples.len() >= LATENCY_SAMPLE_CAP {
             let drop_by = samples.len() - LATENCY_SAMPLE_CAP + 1;
             samples.drain(..drop_by);
@@ -66,7 +69,10 @@ impl Metrics {
         let critical = self.violations_critical_total.load(Ordering::Relaxed);
         let warn = self.violations_warn_total.load(Ordering::Relaxed);
 
-        let samples = self.ingest_latency_ms_samples.lock().unwrap();
+        let samples = self
+            .ingest_latency_ms_samples
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let count = samples.len();
         let sum: f64 = samples.iter().sum();
         let mut out = String::with_capacity(1_024);

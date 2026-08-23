@@ -210,7 +210,10 @@ async fn get_events(
 ) -> Json<Vec<StoredEvent>> {
     let limit = q.limit.unwrap_or(500).min(EVENT_CAP);
     let since = q.since_seq.unwrap_or(0);
-    let events = st.events.lock().unwrap();
+    let events = st
+        .events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let out: Vec<StoredEvent> = events
         .iter()
         .filter(|e| e.seq > since)
@@ -227,7 +230,7 @@ async fn get_processes(State(st): State<Arc<AppState>>) -> Json<Vec<ProcNode>> {
     let records: Vec<ProcRecord> = st
         .processes
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .values()
         .cloned()
         .collect::<Vec<_>>();
@@ -244,7 +247,10 @@ async fn get_violations(
     Query(q): Query<LimitQuery>,
 ) -> Json<Vec<StoredViolation>> {
     let limit = q.limit.unwrap_or(200).min(VIOLATION_CAP);
-    let violations = st.violations.lock().unwrap();
+    let violations = st
+        .violations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let out: Vec<StoredViolation> = violations.iter().rev().take(limit).cloned().collect();
     let mut out = out;
     out.reverse();
@@ -258,7 +264,9 @@ async fn put_policy(
     let denied_count = ruleset.denied_processes.len();
     let secret_glob_count = ruleset.secret_path_globs.len();
     let denied_host_count = ruleset.denied_hosts.len();
-    *st.ruleset.write().unwrap() = ruleset;
+    *st.ruleset
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ruleset;
     tracing::info!(
         target: "audit",
         denied_processes = denied_count,
@@ -299,31 +307,41 @@ pub fn ingest(st: &Arc<AppState>, event: Event) {
         ..
     } = &event
     {
-        st.processes.lock().unwrap().insert(
-            *tgid,
-            ProcRecord {
-                tgid: *tgid,
-                ppid: *ppid,
-                comm: comm.clone(),
-                args: args.clone(),
-                cgroup_id: *cgroup_id,
-                uid: *uid,
-                first_seen_ts_ns: *ts_ns,
-            },
-        );
+        st.processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                *tgid,
+                ProcRecord {
+                    tgid: *tgid,
+                    ppid: *ppid,
+                    comm: comm.clone(),
+                    args: args.clone(),
+                    cgroup_id: *cgroup_id,
+                    uid: *uid,
+                    first_seen_ts_ns: *ts_ns,
+                },
+            );
     }
 
     let seq = st.next_seq.fetch_add(1, Ordering::SeqCst);
     let stored = StoredEvent { seq, event };
     {
-        let mut events = st.events.lock().unwrap();
+        let mut events = st
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if events.len() >= EVENT_CAP {
             events.pop_front();
         }
         events.push_back(stored.clone());
     }
 
-    let rules = st.ruleset.read().unwrap().clone();
+    let rules = st
+        .ruleset
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     for violation in eval(&stored.event, &rules) {
         let severity = violation.severity;
         let stored_violation = StoredViolation::new(
@@ -332,7 +350,10 @@ pub fn ingest(st: &Arc<AppState>, event: Event) {
             violation,
         );
         st.metrics.inc_violation(severity);
-        let mut violations = st.violations.lock().unwrap();
+        let mut violations = st
+            .violations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if violations.len() >= VIOLATION_CAP {
             violations.pop_front();
         }

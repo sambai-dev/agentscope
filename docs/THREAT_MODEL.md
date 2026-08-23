@@ -8,9 +8,10 @@ AgentScope observes and evaluates syscall-level activity of AI coding agents
 (Codex, Claude Code, CI workers) and their child processes on Linux hosts:
 
 - **In scope:** process execution (`sched_process_exec`), outbound network
-  connects (`sys_enter_connect`), file opens (`sys_enter_openat`),
-  capability escalation events; policy evaluation (deny/warn/audit);
-  violation reporting over REST/SSE; live dashboard.
+  connects (`sys_enter_connect`), file opens (`sys_enter_openat`);
+  capability escalation events (simulated/replay source only; eBPF probe is a
+  roadmap item); policy evaluation (deny/warn/audit); violation reporting
+  over REST/SSE; live dashboard.
 - **Out of scope:** content inspection (payloads are opaque), memory/process
   introspection beyond exec identity, non-Linux kernel collection,
   prevention of kernel-level compromise of the host.
@@ -66,7 +67,7 @@ A2. postinstall curls telemetry/exfil host  → NET_DENIED if listed;
                                               pastebin.com, ngrok.io, trycloudflare.com)
                                               (probe: sys_enter_connect)
 A3. script reads ~/.aws/credentials         → SECRET_ACCESS (probe: sys_enter_openat)
-A4. script escalates via sudo/capset        → CAP_ESCALATION
+A4. script escalates via sudo/capset        → CAP_ESCALATION (simulated/replay only; eBPF probe is roadmap)
 ```
 
 Detection coverage: A1–A4 all land in the violations feed with the tgid that
@@ -99,7 +100,7 @@ C1. binary connects to payload CDN          → NET_DENIED (if host listed) /
 C2. binary writes dropped file              → FileOpen write-hint event recorded
                                               (audit; no default rule fires unless path
                                                matches secret globs)
-C3. binary elevates privileges              → CAP_ESCALATION
+C3. binary elevates privileges              → CAP_ESCALATION (simulated/replay only; eBPF probe is roadmap)
 ```
 
 ## 5. Detections ↔ rule ids ↔ probes
@@ -110,7 +111,7 @@ C3. binary elevates privileges              → CAP_ESCALATION
 | `SECRET_ACCESS` | critical | open path matches `secret_path_globs` | sys_enter_openat | `{path, matched_globs}` |
 | `NET_DENIED` | critical | daddr matches `denied_hosts` | sys_enter_connect | `{host, dport}` |
 | `NET_WARN` | medium | daddr matches `warn_hosts` | sys_enter_connect | `{host, dport}` |
-| `CAP_ESCALATION` | high | capability escalation observed | (cap monitor) | `{caps}` |
+| `CAP_ESCALATION` | high | capability escalation observed | simulated/replay only (eBPF probe: roadmap) | `{caps}` |
 
 ## 6. Guarantees
 

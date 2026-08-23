@@ -1,6 +1,6 @@
 # AgentScope Benchmarks
 
-Methodology and (placeholder) results for the policy-engine micro-benchmarks.
+Methodology and results for the policy-engine micro-benchmarks.
 
 ## How to run
 
@@ -24,15 +24,12 @@ cargo run -p asg-cli --bin bench --release
   nanoseconds (p50/p95/p99) and mean ops/s on the author's machine.
   Your numbers will differ; compare relative deltas only.
 
-## Results
+## Results (2026-08-24, Windows dev box, release build, 12 rounds)
 
 | op          |       n | p50 (ns/op) | p95 (ns/op) | p99 (ns/op) | ops/s |
 |-------------|---------|-------------|-------------|-------------|-------|
-| policy_eval | 100_000 | TBD         | TBD         | TBD         | TBD   |
-| glob_match  | 200_000 | TBD         | TBD         | TBD         | TBD   |
-
-Fill this table from your machine and note CPU/RAM/kernel in a footnote when
-publishing comparisons.
+| policy_eval | 100_000 | 1,322       | 1,332       | 1,354       | ~756k |
+| glob_match  | 200_000 | 661         | 664         | 664         | ~1.5M |
 
 ## Reading the numbers
 
