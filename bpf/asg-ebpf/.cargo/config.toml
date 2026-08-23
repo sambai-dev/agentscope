@@ -1,0 +1,8 @@
+# aya/eBPF: compile core from source via build-std.
+# Prebuilt rust-std for bpfel-unknown-none is no longer shipped on recent
+# nightlies, so build-std + rust-src is the supported path.
+[build]
+target = "bpfel-unknown-none"
+
+[unstable]
+build-std = ["core"]

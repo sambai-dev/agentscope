@@ -94,7 +94,7 @@ Real eBPF collection (Linux, root, kernel 5.8+):
 ```bash
 rustup toolchain install nightly --component rust-src
 cargo install bpf-linker
-(cd bpf/asg-ebpf && cargo build --release --target bpfel-unknown-none && cp target/bpfel-unknown-none/release/asg-ebpf ../../bpf/asg.bpf.o)
+(cd bpf/asg-ebpf && cargo +nightly build --release -Z build-std && cp target/bpfel-unknown-none/release/asg-ebpf ../../bpf/asg.bpf.o)
 sudo ./target/release/agentscope serve --source kernel --bpf-path bpf/asg.bpf.o
 ```
 

@@ -35,7 +35,6 @@ jobs:
         with:
           toolchain: nightly
           components: rust-src
-          targets: bpfel-unknown-none
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: bpf/asg-ebpf
@@ -44,4 +43,6 @@ jobs:
       - name: Build eBPF program
         working-directory: bpf/asg-ebpf
         continue-on-error: false
-        run: cargo build --release --target bpfel-unknown-none
+        # .cargo/config.toml pins the target + build-std=core (prebuilt
+        # bpfel-unknown-none rust-std is no longer shipped on nightlies)
+        run: cargo +nightly build --release -Z build-std
