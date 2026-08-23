@@ -39,7 +39,10 @@ fn scenario() -> Vec<Event> {
             ppid: 401,
             cgroup_id: 9_001,
             comm: "npm".into(),
-            args: vec!["exec", "setup-agent-tools"].into_iter().map(String::from).collect(),
+            args: vec!["exec", "setup-agent-tools"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
             uid: 1000,
             ts_ns: ts(2),
         },
@@ -85,7 +88,10 @@ fn scenario() -> Vec<Event> {
             ppid: 401,
             cgroup_id: 9_001,
             comm: "pip3".into(),
-            args: vec!["install", "requests"].into_iter().map(String::from).collect(),
+            args: vec!["install", "requests"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
             uid: 1000,
             ts_ns: ts(7),
         },
@@ -109,29 +115,31 @@ fn scenario() -> Vec<Event> {
 }
 
 fn hardened_rules() -> RuleSet {
-    let mut rs = RuleSet::default();
-    rs.denied_hosts = vec!["evil.telemetry.dev".to_string()];
-    rs
+    RuleSet {
+        denied_hosts: vec!["evil.telemetry.dev".to_string()],
+        ..Default::default()
+    }
 }
 
 #[test]
 fn default_rules_produce_expected_sequence() {
     let rules = RuleSet::default();
+    let s = |x: &str| x.to_string();
     let expected = vec![
         None,
         None,
-        Some("PROC_DENIED"),
+        Some(s("PROC_DENIED")),
         None,
         None,
-        Some("SECRET_ACCESS"),
-        Some("NET_WARN"),
-        Some("PROC_DENIED"),
-        Some("SECRET_ACCESS"),
-        Some("CAP_ESCALATION"),
+        Some(s("SECRET_ACCESS")),
+        Some(s("NET_WARN")),
+        Some(s("PROC_DENIED")),
+        Some(s("SECRET_ACCESS")),
+        Some(s("CAP_ESCALATION")),
     ];
-    let got: Vec<Option<&str>> = scenario()
+    let got: Vec<Option<String>> = scenario()
         .iter()
-        .map(|e| eval(e, &rules).first().map(|v| v.rule_id.as_str()))
+        .map(|e| eval(e, &rules).first().map(|v| v.rule_id.clone()))
         .collect();
     assert_eq!(got, expected);
 }
@@ -140,12 +148,12 @@ fn default_rules_produce_expected_sequence() {
 fn hardened_rules_add_net_denial() {
     let rules = hardened_rules();
     let events = scenario();
-    let ids: Vec<&str> = events
+    let ids: Vec<String> = events
         .iter()
         .flat_map(|e| eval(e, &rules))
         .map(|v| v.rule_id)
         .collect();
-    assert!(ids.contains(&"NET_DENIED"));
+    assert!(ids.iter().any(|id| id == "NET_DENIED"));
     assert_eq!(
         ids,
         vec![

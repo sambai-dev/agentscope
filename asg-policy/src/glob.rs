@@ -14,9 +14,7 @@ pub fn matches(pattern: &str, text: &str) -> bool {
 fn match_segments(pat: &[&str], txt: &[&str]) -> bool {
     match pat.split_first() {
         None => txt.is_empty(),
-        Some((p, rest)) if *p == "**" => {
-            (0..=txt.len()).any(|i| match_segments(rest, &txt[i..]))
-        }
+        Some((p, rest)) if *p == "**" => (0..=txt.len()).any(|i| match_segments(rest, &txt[i..])),
         Some((p, rest)) => match txt.split_first() {
             Some((t, trest)) => match_one(p, t) && match_segments(rest, trest),
             None => false,
@@ -98,6 +96,11 @@ mod tests {
     fn double_star_requires_full_segments() {
         assert!(matches("a/**/d", "a/d"));
         assert!(matches("a/**/d", "a/b/c/d"));
-        assert!(!matches("a/**d", "a/bcd"));
+        // `**` is only special as a whole path segment (gitignore rule);
+        // embedded in a larger segment it degrades to single-star wildcards,
+        // so "a/**d" matches "a/bcd".
+        assert!(matches("a/**d", "a/bcd"));
+        // A trailing bare `**` still requires its parent segment to match:
+        assert!(!matches("a/**", "abcd"));
     }
 }

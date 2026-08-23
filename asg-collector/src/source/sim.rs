@@ -292,8 +292,14 @@ mod tests {
 
     #[test]
     fn passes_rotate_task_ids_but_keep_order() {
-        let a: Vec<String> = script(0).iter().map(|e| format!("{:?}", e.kind())).collect();
-        let b: Vec<String> = script(3).iter().map(|e| format!("{:?}", e.kind())).collect();
+        let a: Vec<String> = script(0)
+            .iter()
+            .map(|e| format!("{:?}", e.kind()))
+            .collect();
+        let b: Vec<String> = script(3)
+            .iter()
+            .map(|e| format!("{:?}", e.kind()))
+            .collect();
         assert_eq!(a, b);
         let first_a = &script(0)[0];
         let first_b = &script(3)[0];

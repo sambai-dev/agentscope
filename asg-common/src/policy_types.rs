@@ -43,10 +43,12 @@ impl Default for RuleSet {
             .iter()
             .map(|s| s.to_string())
             .collect(),
-            denied_processes: ["npm", "pnpm", "yarn", "pip", "pip3", "cargo", "curl", "wget"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            denied_processes: [
+                "npm", "pnpm", "yarn", "pip", "pip3", "cargo", "curl", "wget",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
             denied_hosts: Vec::new(),
             warn_hosts: ["*.onion", "pastebin.com", "ngrok.io", "trycloudflare.com"]
                 .iter()

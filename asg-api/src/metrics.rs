@@ -41,7 +41,8 @@ impl Metrics {
         self.violations_total.fetch_add(1, Ordering::Relaxed);
         match severity {
             Severity::Critical => {
-                self.violations_critical_total.fetch_add(1, Ordering::Relaxed);
+                self.violations_critical_total
+                    .fetch_add(1, Ordering::Relaxed);
             }
             Severity::High | Severity::Medium | Severity::Low => {
                 self.violations_warn_total.fetch_add(1, Ordering::Relaxed);

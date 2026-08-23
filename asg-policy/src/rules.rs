@@ -17,16 +17,30 @@ pub fn basename(path: &str) -> &str {
 /// Evaluates a single event, returning every violation it triggers.
 pub fn eval_event(event: &Event, rules: &RuleSet) -> Vec<Violation> {
     match event {
-        Event::ProcExec { comm, pid, tgid, args, .. } => {
-            eval_proc_exec(comm, *pid, *tgid, args, rules)
-        }
-        Event::FileOpen { comm, path, tgid, is_write_hint, .. } => {
-            eval_file_open(comm, path, *tgid, *is_write_hint, rules)
-        }
-        Event::NetConnect { comm, daddr, dport, tgid, .. } => {
-            eval_net_connect(comm, daddr, *dport, *tgid, rules)
-        }
-        Event::CapEscalate { comm, caps, tgid, .. } => vec![Violation {
+        Event::ProcExec {
+            comm,
+            pid,
+            tgid,
+            args,
+            ..
+        } => eval_proc_exec(comm, *pid, *tgid, args, rules),
+        Event::FileOpen {
+            comm,
+            path,
+            tgid,
+            is_write_hint,
+            ..
+        } => eval_file_open(comm, path, *tgid, *is_write_hint, rules),
+        Event::NetConnect {
+            comm,
+            daddr,
+            dport,
+            tgid,
+            ..
+        } => eval_net_connect(comm, daddr, *dport, *tgid, rules),
+        Event::CapEscalate {
+            comm, caps, tgid, ..
+        } => vec![Violation {
             rule_id: "CAP_ESCALATION".to_string(),
             severity: Severity::High,
             message: format!(
@@ -46,11 +60,18 @@ fn eval_proc_exec(
     rules: &RuleSet,
 ) -> Vec<Violation> {
     let base = basename(comm).to_ascii_lowercase();
-    if rules.denied_processes.iter().any(|d| d.to_ascii_lowercase() == base) {
+    if rules
+        .denied_processes
+        .iter()
+        .any(|d| d.to_ascii_lowercase() == base)
+    {
         return vec![Violation {
             rule_id: "PROC_DENIED".to_string(),
             severity: Severity::Critical,
-            message: format!("denied process '{}' (basename '{}') was executed", comm, base),
+            message: format!(
+                "denied process '{}' (basename '{}') was executed",
+                comm, base
+            ),
             evidence: json!({ "comm": comm, "pid": pid, "tgid": tgid, "args": args }),
         }];
     }
@@ -82,7 +103,11 @@ fn eval_file_open(
             comm,
             normalized,
             mode,
-            matched.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            matched
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         evidence: json!({ "path": normalized, "comm": comm, "tgid": tgid, "mode": mode, "matched_globs": matched }),
     }]
@@ -95,7 +120,10 @@ fn eval_net_connect(
     tgid: u32,
     rules: &RuleSet,
 ) -> Vec<Violation> {
-    let denied = rules.denied_hosts.iter().find(|h| crate::glob::matches(h, daddr));
+    let denied = rules
+        .denied_hosts
+        .iter()
+        .find(|h| crate::glob::matches(h, daddr));
     if let Some(host) = denied {
         return vec![Violation {
             rule_id: "NET_DENIED".to_string(),
@@ -107,7 +135,10 @@ fn eval_net_connect(
             evidence: json!({ "host": daddr, "dport": dport, "comm": comm, "tgid": tgid, "matched_glob": host }),
         }];
     }
-    let warned = rules.warn_hosts.iter().find(|h| crate::glob::matches(h, daddr));
+    let warned = rules
+        .warn_hosts
+        .iter()
+        .find(|h| crate::glob::matches(h, daddr));
     if let Some(host) = warned {
         return vec![Violation {
             rule_id: "NET_WARN".to_string(),
@@ -134,6 +165,7 @@ fn normalize_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eval;
 
     #[test]
     fn basename_extraction() {

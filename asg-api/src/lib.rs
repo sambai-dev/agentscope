@@ -8,7 +8,7 @@ pub mod metrics;
 
 use asg_common::events::Event;
 use asg_common::policy_types::RuleSet;
-use asg_policy::{eval, Severity, Violation};
+use asg_policy::{eval, Violation};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -35,7 +35,8 @@ use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
 /// Embedded dashboard (vanilla JS, zero CDN dependencies).
-pub const INDEX_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/index.html"));
+pub const INDEX_HTML: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/index.html"));
 
 /// Cap on the in-memory event ring.
 pub const EVENT_CAP: usize = 20_000;
@@ -140,7 +141,11 @@ pub enum ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (StatusCode::BAD_REQUEST, Json(json!({ "error": self.to_string() }))).into_response()
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": self.to_string() })),
+        )
+            .into_response()
     }
 }
 
@@ -168,7 +173,10 @@ async fn healthz() -> Json<serde_json::Value> {
 
 async fn api_metrics(State(st): State<Arc<AppState>>) -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
         st.metrics.render(),
     )
 }
@@ -210,6 +218,7 @@ async fn get_events(
         .take(limit)
         .cloned()
         .collect();
+    let mut out = out;
     out.reverse();
     Json(out)
 }
@@ -237,6 +246,7 @@ async fn get_violations(
     let limit = q.limit.unwrap_or(200).min(VIOLATION_CAP);
     let violations = st.violations.lock().unwrap();
     let out: Vec<StoredViolation> = violations.iter().rev().take(limit).cloned().collect();
+    let mut out = out;
     out.reverse();
     Json(out)
 }
@@ -267,8 +277,7 @@ async fn get_stream(
         Ok(m) => Some(Ok::<_, Infallible>(SseEvent::default().data(
             serde_json::to_string(&m).unwrap_or_else(|_| "{\"kind\":\"pong\"}".into()),
         ))),
-        Err(broadcast::error::RecvError::Lagged(_)) => None,
-        Err(broadcast::error::RecvError::Closed) => None,
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => None,
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -333,7 +342,8 @@ pub fn ingest(st: &Arc<AppState>, event: Event) {
     }
 
     let _ = st.tx.send(StreamMsg::Event(stored));
-    st.metrics.observe_ingest_latency_ms(started.elapsed().as_secs_f64() * 1_000.0);
+    st.metrics
+        .observe_ingest_latency_ms(started.elapsed().as_secs_f64() * 1_000.0);
 }
 
 fn event_now_ns() -> u64 {
@@ -346,7 +356,7 @@ fn event_now_ns() -> u64 {
 /// Builds a process forest from flat records, synthesizing placeholder roots
 /// labelled `(unknown pid N)` for parents that were never observed.
 pub fn build_process_forest(records: &[ProcRecord]) -> Vec<ProcNode> {
-    let mut by_tgid: HashMap<u32, &ProcRecord> = records.iter().map(|r| (r.tgid, r)).collect();
+    let by_tgid: HashMap<u32, &ProcRecord> = records.iter().map(|r| (r.tgid, r)).collect();
     let mut children_of: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut sorted: Vec<&ProcRecord> = records.iter().collect();
     sorted.sort_by_key(|r| (r.first_seen_ts_ns, r.tgid));
@@ -370,7 +380,7 @@ pub fn build_process_forest(records: &[ProcRecord]) -> Vec<ProcNode> {
             .map(|kids| {
                 kids.iter()
                     .filter(|kid| **kid != tgid)
-                    .map(|kid| node_for(**kid, by_tgid, children_of, memo))
+                    .map(|&kid| node_for(kid, by_tgid, children_of, memo))
                     .collect()
             })
             .unwrap_or_default();
@@ -506,7 +516,10 @@ mod tests {
             "SECRET_ACCESS"
         );
         let first = rx.try_recv().unwrap();
-        assert!(matches!(first, StreamMsg::Event(StoredEvent { seq: 0, .. })));
+        assert!(matches!(
+            first,
+            StreamMsg::Event(StoredEvent { seq: 0, .. })
+        ));
         assert_eq!(state.next_seq.load(Ordering::SeqCst), 2);
     }
 }

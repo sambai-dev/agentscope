@@ -57,8 +57,7 @@ pub async fn start(tx: Sender<Event>) -> Result<JoinHandle<()>, CollectorError> 
     let map = bpf
         .take_map(RING_BUF_MAP)
         .ok_or_else(|| CollectorError::Aya(format!("missing map {RING_BUF_MAP}")))?;
-    let ring = aya::maps::RingBuf::try_from(map)
-        .map_err(|e| CollectorError::Aya(e.to_string()))?;
+    let ring = aya::maps::RingBuf::try_from(map).map_err(|e| CollectorError::Aya(e.to_string()))?;
 
     info!(path = object_path(), "kernel source started");
     Ok(tokio::spawn(poll_loop(ring, tx)))

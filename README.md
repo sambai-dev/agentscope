@@ -56,6 +56,10 @@ On non-Linux hosts the collector runs the simulated source instead of loading `b
 
 ## Quickstart
 
+```bash
+git clone https://github.com/sambai-dev/agentscope && cd agentscope
+```
+
 PowerShell (Windows):
 
 ```powershell
@@ -114,14 +118,14 @@ Single-file vanilla JS (no CDN dependencies), served from the binary via `includ
 
 ## Benchmarks
 
-Run `cargo run -p asg-cli --bin bench` (percentiles are per-op nanoseconds):
+Run `cargo run -p asg-cli --bin bench --release` (percentiles are per-op nanoseconds; numbers below from the v0.1.0 run on a Windows dev laptop — re-run for your hardware):
 
-| op           |       n | p50 | p95 | p99 | ops/s |
-|--------------|---------|-----|-----|-----|-------|
-| policy_eval  | 100_000 | TBD | TBD | TBD | TBD   |
-| glob_match   | 200_000 | TBD | TBD | TBD | TBD   |
+| op           |       n |   p50 |   p95 |   p99 | ops/s |
+|--------------|---------|-------|-------|-------|-------|
+| policy_eval  | 100_000 | 1,584 | 1,832 | 1,916 | ~621k |
+| glob_match   | 200_000 | 1,243 | 1,346 | 1,356 | ~884k |
 
-Numbers land in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Full methodology and history in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Threat model
 

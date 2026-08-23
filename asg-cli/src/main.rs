@@ -9,10 +9,13 @@ use asg_common::policy_types::RuleSet;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 #[derive(Debug, Parser)]
-#[command(name = "agentscope", version, about = "eBPF runtime security for AI coding agents")]
+#[command(
+    name = "agentscope",
+    version,
+    about = "eBPF runtime security for AI coding agents"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -113,8 +116,7 @@ async fn serve(port: u16, mode: SourceMode, bpf_path: String) -> Result<()> {
 async fn replay(file: &str) -> Result<()> {
     init_tracing();
     let (state, _rx) = AppState::new(RuleSet::default());
-    let content =
-        std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?;
+    let content = std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?;
 
     let mut ingested = 0usize;
     for (idx, line) in content.lines().filter(|l| !l.trim().is_empty()).enumerate() {

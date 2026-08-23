@@ -18,6 +18,7 @@ asg-api = { workspace = true }
 asg-collector = { workspace = true }
 asg-common = { workspace = true }
 asg-policy = { workspace = true }
+axum = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
