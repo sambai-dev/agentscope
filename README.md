@@ -102,7 +102,7 @@ sudo ./target/release/agentscope serve --source kernel --bpf-path bpf/asg.bpf.o
 
 | Route | Method | Description |
 | --- | --- | --- |
-| `/healthz` | GET | Liveness probe, returns `{"status":"ok"}` |
+| `/healthz` | GET | Readiness probe: `200 {"status":"ok"}` while the configured event source (simulated or eBPF collector) is producing, `503 {"status":"degraded"}` otherwise |
 | `/api/metrics` | GET | Prometheus text format (hand-written exposition) |
 | `/v1/events` | POST | Ingest one event or an array of events |
 | `/v1/events?limit&since_seq` | GET | Stored events with monotonic sequence numbers |

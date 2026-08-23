@@ -26,7 +26,7 @@ use std::{
     collections::{HashMap, VecDeque},
     convert::Infallible,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, RwLock,
     },
     time::Instant,
@@ -113,10 +113,14 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub next_seq: AtomicU64,
     pub tx: broadcast::Sender<StreamMsg>,
+    /// Whether the configured event source (simulated or eBPF collector) is
+    /// currently producing events; drives `/healthz` readiness.
+    source_alive: AtomicBool,
 }
 
 impl AppState {
-    /// Creates a fresh state with the given starting rule set.
+    /// Creates a fresh state with the given starting rule set. The event
+    /// source starts out marked down until the runtime marks it up.
     pub fn new(ruleset: RuleSet) -> (Arc<Self>, broadcast::Receiver<StreamMsg>) {
         let (tx, rx) = broadcast::channel(STREAM_CAPACITY);
         let state = Arc::new(Self {
@@ -127,8 +131,19 @@ impl AppState {
             metrics: Arc::new(Metrics::new()),
             next_seq: AtomicU64::new(0),
             tx,
+            source_alive: AtomicBool::new(false),
         });
         (state, rx)
+    }
+
+    /// Marks the event source as up (`true`) or down (`false`).
+    pub fn set_source_alive(&self, alive: bool) {
+        self.source_alive.store(alive, Ordering::SeqCst);
+    }
+
+    /// Returns `true` while the configured event source is producing.
+    pub fn source_alive(&self) -> bool {
+        self.source_alive.load(Ordering::SeqCst)
     }
 }
 
@@ -167,8 +182,22 @@ async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
-async fn healthz() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok" }))
+/// Readiness probe: `200 {"status":"ok"}` while the configured event source
+/// (simulated or eBPF collector) is producing, otherwise `503` degraded so
+/// orchestrators stop routing to an instance that cannot observe events.
+async fn healthz(State(st): State<Arc<AppState>>) -> Response {
+    if st.source_alive() {
+        Json(json!({ "status": "ok" })).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "degraded",
+                "reason": "event source not running",
+            })),
+        )
+            .into_response()
+    }
 }
 
 async fn api_metrics(State(st): State<Arc<AppState>>) -> impl IntoResponse {
@@ -288,6 +317,40 @@ async fn get_stream(
         Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => None,
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Resolves once the process is asked to shut down: Ctrl+C (SIGINT) on every
+/// platform, plus SIGTERM on Unix. Feed the returned future to
+/// [`axum::serve`] via `with_graceful_shutdown` to stop accepting new
+/// connections and let in-flight requests finish.
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            tracing::error!("failed to listen for Ctrl+C; shutdown signal disabled");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(err) => {
+                tracing::error!(%err, "failed to install SIGTERM handler; shutdown signal disabled");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("shutdown requested: interrupt"),
+        _ = terminate => tracing::info!("shutdown requested: terminate"),
+    }
 }
 
 /// Runs one event through the full pipeline: store, process tree, policy,
@@ -542,5 +605,34 @@ mod tests {
             StreamMsg::Event(StoredEvent { seq: 0, .. })
         ));
         assert_eq!(state.next_seq.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn healthz_reflects_event_source_readiness() {
+        let (state, _rx) = AppState::new(RuleSet::default());
+
+        let body = healthz_body(State(state.clone())).await;
+        assert_eq!(body.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.1["status"], "degraded");
+        assert_eq!(body.1["reason"], "event source not running");
+
+        state.set_source_alive(true);
+        let body = healthz_body(State(state.clone())).await;
+        assert_eq!(body.0, StatusCode::OK);
+        assert_eq!(body.1["status"], "ok");
+
+        state.set_source_alive(false);
+        let body = healthz_body(State(state)).await;
+        assert_eq!(body.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.1["status"], "degraded");
+    }
+
+    async fn healthz_body(st: State<Arc<AppState>>) -> (StatusCode, serde_json::Value) {
+        let response = healthz(st).await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
     }
 }

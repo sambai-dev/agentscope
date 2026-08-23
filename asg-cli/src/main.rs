@@ -9,6 +9,11 @@ use asg_common::policy_types::RuleSet;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::time::Duration;
+
+/// How long `serve` waits for in-flight requests to drain after a shutdown
+/// signal before exiting.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -92,9 +97,21 @@ async fn serve(port: u16, mode: SourceMode, bpf_path: String) -> Result<()> {
     let (state, _stream_rx) = AppState::new(RuleSet::default());
     let (tx, rx) = pipe::make_channel(pipe::DEFAULT_CHANNEL_CAPACITY);
 
-    let _source_task = asg_collector::start(mode, tx)
+    let source_task = asg_collector::start(mode, tx)
         .await
         .context("starting event source")?;
+    state.set_source_alive(true);
+    let health_state = state.clone();
+    tokio::spawn(async move {
+        // Any exit of the source task means events stop flowing; reflect
+        // that in /healthz instead of reporting a false "ok".
+        if let Err(err) = source_task.await {
+            tracing::warn!(%err, "event source died; /healthz now reports degraded");
+        } else {
+            tracing::warn!("event source stopped; /healthz now reports degraded");
+        }
+        health_state.set_source_alive(false);
+    });
 
     let pipeline_state = state.clone();
     tokio::spawn(async move {
@@ -110,7 +127,25 @@ async fn serve(port: u16, mode: SourceMode, bpf_path: String) -> Result<()> {
         .await
         .with_context(|| format!("binding {addr}"))?;
     tracing::info!(%addr, "AgentScope dashboard ready at http://localhost:{port}");
-    axum::serve(listener, app).await.context("server error")
+
+    // Stop accepting new connections on Ctrl+C/SIGTERM, then drain in-flight
+    // requests for at most SHUTDOWN_DRAIN_TIMEOUT before exiting.
+    let server = axum::serve(listener, app).with_graceful_shutdown(asg_api::shutdown_signal());
+    match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, server).await {
+        Ok(result) => result.context("server error")?,
+        Err(_) => {
+            tracing::warn!(
+                timeout_secs = SHUTDOWN_DRAIN_TIMEOUT.as_secs(),
+                "drain timed out"
+            )
+        }
+    }
+    state.set_source_alive(false);
+    tracing::info!(
+        events_ingested = state.next_seq.load(std::sync::atomic::Ordering::SeqCst),
+        "AgentScope dashboard shut down cleanly"
+    );
+    Ok(())
 }
 
 async fn replay(file: &str) -> Result<()> {
