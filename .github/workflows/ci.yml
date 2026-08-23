@@ -38,12 +38,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: bpf/asg-ebpf
-      - name: Install LLVM (needed by bpf-linker)
-        run: sudo apt-get update && sudo apt-get install -y llvm-dev libclang-dev clang
-      - name: Install bpf-linker
-        run: cargo install bpf-linker
+      - name: Install LLVM 18 toolchain (bpf-linker is pinned to LLVM 18)
+        run: sudo apt-get update && sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18 lld-18
+      - name: Install bpf-linker (pinned, linked against LLVM 18)
+        run: LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo install bpf-linker --version 0.9.13 --locked
       - name: Build eBPF program
         working-directory: bpf/asg-ebpf
+        env:
+          PATH: /usr/lib/llvm-18/bin:${{ github.path }}
         continue-on-error: false
         # .cargo/config.toml pins the target + build-std=core (prebuilt
         # bpfel-unknown-none rust-std is no longer shipped on nightlies)
