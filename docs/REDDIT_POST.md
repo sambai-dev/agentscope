@@ -43,6 +43,11 @@ crate is no_std aya-ebpf, built separately with nightly + bpf-linker; on
 Windows everything compiles clean because every Linux-only piece is
 cfg-gated.
 
+**Numbers** (release build, reproducible via `cargo run -p asg-cli --bin
+bench --release`): policy eval p50 1.6µs (~621k/s), glob match p50 1.2µs
+(~884k/s). The policy engine is not the bottleneck for workstation event
+volumes; the kernel ring is sized well below what userspace can drain.
+
 **Honest gaps** (threat model in repo): no payload inspection (encrypted
 traffic is opaque), root can unload the probes, path rules have TOCTOU
 windows, enforcement/deny is roadmap (today: observe + alert), and the
