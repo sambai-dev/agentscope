@@ -44,8 +44,6 @@ jobs:
         run: LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo install bpf-linker --version 0.9.13 --locked
       - name: Build eBPF program
         working-directory: bpf/asg-ebpf
-        env:
-          PATH: /usr/lib/llvm-18/bin:${{ github.path }}
         continue-on-error: false
         # .cargo/config.toml pins the target + build-std=core (prebuilt
         # bpfel-unknown-none rust-std is no longer shipped on nightlies)
