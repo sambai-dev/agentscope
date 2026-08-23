@@ -12,7 +12,8 @@ not from whatever the process claims in its own logs.
 AgentScope is a Rust workspace that:
 
 1. Loads eBPF probes (aya) on tracepoints `sched_process_exec`,
-   `sys_enter_connect` and `sys_enter_openat`, scoped per agent cgroup.
+   `sys_enter_connect` and `sys_enter_openat`, attributing events to agents
+   by pid ancestry (cgroup-scoped attachment is roadmap).
 2. Streams events over a ring buffer to a userspace collector.
 3. Evaluates every event against a declarative policy: deny package managers,
    flag reads of `.env` / `.ssh/id_rsa` / AWS creds / wallet files, warn on
@@ -55,6 +56,8 @@ Architecture sketch and threat model are in the repo docs
 (docs/THREAT_MODEL.md maps each persona — malicious postinstall script,
 prompt-injected agent exfiltrating .env, compromised tool binary — to the
 exact rule ids and probes that catch them). Benchmarks are honest
-Instant-based percentiles, no criterion: `cargo run -p asg-cli --bin bench`.
-CI runs clippy `-D warnings` on both ubuntu and windows for the portable
-crates, plus a nightly job building the actual eBPF ELF.
+Instant-based percentiles, no criterion — release build:
+policy eval ~621k ops/s p50 1.6µs, glob match ~884k ops/s p50 1.2µs
+(`cargo run -p asg-cli --bin bench --release`). CI runs clippy `-D warnings`
+on both ubuntu and windows for the portable crates, plus a nightly job
+building the actual eBPF ELF with bpf-linker against LLVM 18.
