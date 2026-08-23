@@ -1,0 +1,21 @@
+[package]
+name = "asg-collector"
+description = "AgentScope event collection: eBPF kernel source (Linux) and deterministic simulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+asg-common = { workspace = true }
+asg-policy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = "0.13"

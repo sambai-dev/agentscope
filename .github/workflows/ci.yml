@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  fmt-clippy-test:
+    name: ${{ matrix.os }} / fmt + clippy + test (portable crates)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+
+  ebpf-build:
+    name: eBPF bytecode build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly
+          components: rust-src
+          targets: bpfel-unknown-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bpf/asg-ebpf
+      - name: Install bpf-linker
+        run: cargo install bpf-linker
+      - name: Build eBPF program
+        working-directory: bpf/asg-ebpf
+        continue-on-error: false
+        run: cargo build --release --target bpfel-unknown-none

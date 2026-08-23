@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentScope</title>
+<style>
+  :root {
+    --bg: #0a0a0b;
+    --panel: #141417;
+    --border: #26262c;
+    --text: #e6e6eb;
+    --muted: #9a9aa3;
+    --accent: #10b981;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px; line-height: 1.45; }
+  ::selection { background: rgba(16,185,129,.25); }
+  a { color: var(--accent); text-decoration: none; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-variant-numeric: tabular-nums; }
+
+  header.top {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 24px;
+    background: rgba(10,10,11,.82); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  header.top h1 { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+  header.top .sub { color: var(--muted); font-size: 13px; }
+  .spacer { flex: 1; }
+  .stat { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .stat b { color: var(--text); font-weight: 600; }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); position: relative; }
+  .dot.ok { background: var(--accent); }
+  .dot.ok::after {
+    content: ""; position: absolute; inset: -4px; border-radius: 50%;
+    border: 1px solid var(--accent); opacity: .8;
+    animation: ping 2s cubic-bezier(0,0,.2,1) infinite;
+  }
+  .dot.down { background: var(--danger); }
+  @keyframes ping { 75%, 100% { transform: scale(2.2); opacity: 0; } }
+
+  main { padding: 24px; max-width: 1440px; margin: 0 auto;
+    display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 12px; }
+
+  .card { background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden; min-width: 0;
+    display: flex; flex-direction: column; }
+  .card > .head { display: flex; align-items: baseline; gap: 8px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .card > .head h2 { font-size: 12px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--muted); }
+  .card > .head .meta { margin-left: auto; color: var(--muted); font-size: 12px;
+    font-variant-numeric: tabular-nums; }
+  .card > .body { padding: 12px 16px; overflow: auto; }
+  .wide { grid-column: 1 / -1; }
+  .tall .body { max-height: 420px; }
+
+  .empty { color: var(--muted); padding: 22px 0; text-align: center; font-size: 13px; }
+
+  ul.tree { list-style: none; font-variant-numeric: tabular-nums; }
+  ul.tree ul { list-style: none; margin-left: 14px; padding-left: 12px; border-left: 1px solid var(--border); }
+  ul.tree li { padding: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  ul.tree .row { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; }
+  .pcomm { font-weight: 600; }
+  .ppid { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .pargs { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  li.synthetic > .row .pcomm { color: var(--muted); font-style: italic; font-weight: 400; }
+
+  table.net { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.net th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px;
+    letter-spacing: .05em; text-transform: uppercase; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  table.net td { padding: 6px 8px; border-bottom: 1px solid transparent; font-size: 13px; }
+  tr.denied td.host { color: var(--danger); }
+  tr.warned td.host { color: var(--warn); }
+  td.count { text-align: right; width: 70px; }
+  .bar { height: 3px; border-radius: 2px; background: var(--accent); margin-top: 3px; }
+  tr.denied .bar { background: var(--danger); }
+  tr.warned .bar { background: var(--warn); }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10.5px;
+    font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+  .tag.danger { color: var(--danger); border: 1px solid rgba(239,68,68,.35); background: rgba(239,68,68,.08); }
+  .tag.warn { color: var(--warn); border: 1px solid rgba(245,158,11,.35); background: rgba(245,158,11,.08); }
+  .tag.accent { color: var(--accent); border: 1px solid rgba(16,185,129,.35); background: rgba(16,185,129,.08); }
+  .tag.muted { color: var(--muted); border: 1px solid var(--border); background: transparent; }
+
+  .timeline { position: relative; padding-left: 18px; }
+  .timeline::before { content: ""; position: absolute; left: 5px; top: 4px; bottom: 4px;
+    width: 1px; background: var(--border); }
+  .tl-item { position: relative; padding: 4px 0 4px 8px; }
+  .tl-item::before { content: ""; position: absolute; left: -17px; top: 12px; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--border); }
+  .tl-item.secret::before { background: var(--danger); box-shadow: 0 0 0 3px rgba(239,68,68,.15); }
+  .tl-item.write::before { background: var(--warn); }
+  .tl-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  .tl-item.secret .tl-path { color: var(--danger); }
+  .tl-meta { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+  .viol { display: flex; flex-direction: column; gap: 8px; }
+  .viol-item { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  .viol-item.critical { border-color: rgba(239,68,68,.4); }
+  .viol-top { display: flex; align-items: center; gap: 8px; }
+  .rule { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px;
+    color: var(--text); background: rgba(255,255,255,.04); padding: 2px 6px; border-radius: 6px; }
+  .when { margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .msg { margin-top: 6px; font-size: 13px; color: var(--text); }
+  .evd { margin-top: 4px; color: var(--muted); font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  textarea#policy-json { width: 100%; min-height: 190px; resize: vertical;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px; outline: none;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  textarea#policy-json:focus { border-color: rgba(16,185,129,.5); }
+  .actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  button#apply { appearance: none; border: 1px solid rgba(16,185,129,.4); background: rgba(16,185,129,.12);
+    color: var(--accent); font-weight: 600; font-size: 13px; padding: 7px 16px; border-radius: 8px;
+    cursor: pointer; transition: background .15s ease, transform .05s ease; }
+  button#apply:hover { background: rgba(16,185,129,.2); }
+  button#apply:active { transform: translateY(1px); }
+  #apply-result { font-size: 12.5px; }
+  #apply-result.ok { color: var(--accent); }
+  #apply-result.err { color: var(--danger); }
+
+  footer { color: var(--muted); text-align: center; font-size: 12px; padding: 8px 0 28px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="dot" id="status-dot"></span>
+  <h1>AgentScope</h1>
+  <span class="sub">runtime security for coding agents</span>
+  <div class="spacer"></div>
+  <span class="stat">events <b id="stat-events">–</b></span>
+  <span class="stat">violations <b id="stat-viol">–</b></span>
+  <span class="stat" id="status-label">connecting…</span>
+</header>
+
+<main>
+  <section class="card tall">
+    <div class="head"><h2>Process tree</h2><span class="meta" id="proc-meta"></span></div>
+    <div class="body"><div id="procs" class="empty">waiting for exec events…</div></div>
+  </section>
+
+  <section class="card tall">
+    <div class="head"><h2>Violations</h2><span class="meta" id="viol-meta"></span></div>
+    <div class="body"><div id="viols" class="viol"><div class="empty">no policy breaches observed</div></div></div>
+  </section>
+
+  <section class="card tall">
+    <div class="head"><h2>File access</h2><span class="meta" id="file-meta"></span></div>
+    <div class="body"><div id="files" class="timeline empty">no opens captured yet</div></div>
+  </section>
+
+  <section class="card tall">
+    <div class="head"><h2>Network map</h2><span class="meta" id="net-meta"></span></div>
+    <div class="body">
+      <table class="net">
+        <thead><tr><th>destination</th><th style="width:90px">class</th><th style="text-align:right">conns</th></tr></thead>
+        <tbody id="netrows"></tbody>
+      </table>
+      <div id="net-empty" class="empty">no connections captured yet</div>
+    </div>
+  </section>
+
+  <section class="card wide">
+    <div class="head"><h2>Policy</h2><span class="meta">PUT /v1/policy · applies immediately</span></div>
+    <div class="body">
+      <textarea id="policy-json" spellcheck="false"></textarea>
+      <div class="actions">
+        <button id="apply">Apply</button>
+        <span id="apply-result"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>kernel-grounded audit trail · tracepoints sched_process_exec / sys_enter_connect / sys_enter_openat</footer>
+
+<script>
+"use strict";
+
+const DEFAULT_RULES = {
+  secret_path_globs: [".ssh/**","**/.ssh/**",".env","**/.env","**/.aws/**","**/.kube/config","**/*wallet*","**/id_rsa*"],
+  denied_processes: ["npm","pnpm","yarn","pip","pip3","cargo","curl","wget"],
+  denied_hosts: [],
+  warn_hosts: ["*.onion","pastebin.com","ngrok.io","trycloudflare.com"],
+  max_events_per_sec: 10000
+};
+
+let RULES = structuredClone(DEFAULT_RULES);
+let EVENTS = [];
+let VIOLATIONS = [];
+const EVENT_CAP = 400;
+
+const $ = (id) => document.getElementById(id);
+
+function globMatch(pattern, text) {
+  const p = pattern.split("/"), t = text.split("/");
+  const oneSeg = (pat, txt) => {
+    const pc = [...pat], tc = [...txt];
+    const chars = (a, b) => {
+      if (a >= pc.length) return b >= tc.length;
+      if (pc[a] === "*") { for (let i = b; i <= tc.length; i++) if (chars(a + 1, i)) return true; return false; }
+      if (b >= tc.length) return false;
+      if (pc[a] === "?") return chars(a + 1, b + 1);
+      if (pc[a] !== tc[b]) return false;
+      return chars(a + 1, b + 1);
+    };
+    return chars(0, 0);
+  };
+  const segs = (i, j) => {
+    if (i >= p.length) return j >= t.length;
+    if (p[i] === "**") {
+      for (let k = j; k <= t.length; k++) if (segs(i + 1, k)) return true;
+      return false;
+    }
+    if (j >= t.length) return false;
+    return oneSeg(p[i], t[j]) && segs(i + 1, j + 1);
+  };
+  return segs(0, 0);
+}
+
+function normalizePath(path) {
+  let p = path;
+  while (p.startsWith("./")) p = p.slice(2);
+  return p;
+}
+
+function isSecret(path) {
+  const norm = normalizePath(path);
+  return RULES.secret_path_globs.some((g) => globMatch(g, norm));
+}
+
+function hostClass(host) {
+  if (RULES.denied_hosts.some((g) => globMatch(g, host))) return "denied";
+  if (RULES.warn_hosts.some((g) => globMatch(g, host))) return "warned";
+  return "";
+}
+
+function rfc3339(tsNs) {
+  return new Date(Number(tsNs / 1e6)).toISOString().replace(".000Z", "Z");
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function renderProcesses(forest) {
+  const root = $("procs");
+  root.className = ""; root.textContent = "";
+  $("proc-meta").textContent = forest.length ? `${countNodes(forest)} procs` : "";
+  if (!forest.length) { root.className = "empty"; root.textContent = "waiting for exec events…"; return; }
+  const ul = el("ul", "tree");
+  forest.forEach((n) => ul.appendChild(nodeLi(n)));
+  root.appendChild(ul);
+}
+
+function countNodes(nodes) {
+  return nodes.reduce((acc, n) => acc + 1 + countNodes(n.children || []), 0);
+}
+
+function nodeLi(n) {
+  const li = el("li", String(n.comm).startsWith("(unknown") ? "synthetic" : "");
+  const row = el("div", "row");
+  row.appendChild(el("span", "pcomm", n.comm));
+  row.appendChild(el("span", "ppid", "#" + n.id));
+  if ((n.args || []).length) row.appendChild(el("span", "pargs", n.args.join(" ").slice(0, 120)));
+  li.appendChild(row);
+  if ((n.children || []).length) {
+    const sub = el("ul");
+    n.children.forEach((c) => sub.appendChild(nodeLi(c)));
+    li.appendChild(sub);
+  }
+  return li;
+}
+
+function renderNetwork(events) {
+  const counts = new Map();
+  for (const s of events) {
+    if (s.event.type !== "net_connect") continue;
+    const e = s.event;
+    const rec = counts.get(e.daddr) || { count: 0, comm: e.comm };
+    rec.count += 1;
+    counts.set(e.daddr, rec);
+  }
+  const rows = [...counts.entries()].sort((a, b) => b[1].count - a[1].count);
+  $("net-empty").style.display = rows.length ? "none" : "";
+  $("net-meta").textContent = rows.length ? `${rows.length} hosts` : "";
+  const tbody = $("netrows");
+  tbody.textContent = "";
+  const max = Math.max(1, ...rows.map(([, r]) => r.count));
+  for (const [host, rec] of rows.slice(0, 40)) {
+    const cls = hostClass(host);
+    const tr = el("tr", cls);
+    const tdHost = el("td", "host", host);
+    const bar = el("div", "bar");
+    bar.style.width = `${Math.round((rec.count / max) * 100)}%`;
+    tdHost.appendChild(bar);
+    const tagCls = cls === "denied" ? "danger" : cls === "warned" ? "warn" : "muted";
+    const label = cls === "denied" ? "denied" : cls === "warned" ? "watch" : "allow";
+    const tdTag = el("td");
+    tdTag.appendChild(el("span", `tag ${tagCls}`, label));
+    const tdCount = el("td", "count", String(rec.count));
+    tr.append(tdHost, tdTag, tdCount);
+    tbody.appendChild(tr);
+  }
+}
+
+function renderFiles(events) {
+  const root = $("files");
+  root.textContent = ""; root.className = "timeline";
+  const opens = events.filter((s) => s.event.type === "file_open").slice(-60).reverse();
+  $("file-meta").textContent = opens.length ? `${opens.length} recent` : "";
+  if (!opens.length) { root.className = "empty"; root.textContent = "no opens captured yet"; return; }
+  for (const s of opens) {
+    const e = s.event;
+    const secret = isSecret(e.path);
+    const item = el("div", "tl-item" + (secret ? " secret" : "") + (e.is_write_hint && !secret ? " write" : ""));
+    item.appendChild(el("div", "tl-path", (e.is_write_hint ? "✎ " : "") + normalizePath(e.path)));
+    item.appendChild(el("div", "tl-meta",
+      `${rfc3339(e.ts_ns)} · ${e.comm} · tgid ${e.tgid}${secret ? " · SECRET" : e.is_write_hint ? " · write" : ""}`));
+    root.appendChild(item);
+  }
+}
+
+function sevClass(sev) {
+  switch (sev) {
+    case "critical": return "danger";
+    case "high":
+    case "medium": return "warn";
+    default: return "muted";
+  }
+}
+
+function evidenceLine(v) {
+  const ev = v.evidence || {};
+  if (ev.path) return `${ev.comm || "?"} → ${ev.path}`;
+  if (ev.host) return `${ev.comm || "?"} → ${ev.host}:${ev.dport ?? ""}`;
+  if (ev.caps) return `${ev.comm || "?"} → ${ev.caps}`;
+  return JSON.stringify(ev).slice(0, 140);
+}
+
+function renderViolations(list) {
+  const root = $("viols");
+  root.textContent = ""; root.className = "viol";
+  $("viol-meta").textContent = list.length ? `${list.length}` : "";
+  if (!list.length) { root.appendChild(el("div", "empty", "no policy breaches observed")); return; }
+  for (const v of list.slice(0, 60)) {
+    const item = el("div", "viol-item" + (v.severity === "critical" ? " critical" : ""));
+    const top = el("div", "viol-top");
+    top.appendChild(el("span", `tag ${sevClass(v.severity)}`, v.severity));
+    top.appendChild(el("span", "rule", v.rule_id));
+    top.appendChild(el("span", "when", (v.ts_rfc3339 || "").replace("T", " ").replace("Z", "")));
+    item.appendChild(top);
+    item.appendChild(el("div", "msg", v.message));
+    item.appendChild(el("div", "evd", evidenceLine(v)));
+    root.appendChild(item);
+  }
+}
+
+async function poll() {
+  try {
+    const [procsRes, evRes, violRes, metRes] = await Promise.all([
+      fetch("/v1/processes"),
+      fetch("/v1/events?limit=" + EVENT_CAP),
+      fetch("/v1/violations?limit=200"),
+      fetch("/api/metrics")
+    ]);
+    renderProcesses(await procsRes.json());
+    EVENTS = await evRes.json();
+    VIOLATIONS = await violRes.json();
+    const met = await metRes.text();
+    const evTotal = /asg_events_total (\d+)/.exec(met);
+    const viTotal = /asg_violations_total (\d+)/.exec(met);
+    if (evTotal) $("stat-events").textContent = Number(evTotal[1]).toLocaleString();
+    if (viTotal) $("stat-viol").textContent = Number(viTotal[1]).toLocaleString();
+    renderNetwork(EVENTS);
+    renderFiles(EVENTS);
+    renderViolations(VIOLATIONS);
+  } catch (err) {
+    setStatus(false, "poll failed");
+  }
+}
+
+function setStatus(ok, label) {
+  const dot = $("status-dot");
+  dot.className = "dot " + (ok ? "ok" : "down");
+  $("status-label").textContent = label;
+}
+
+let es = null;
+function connectStream() {
+  if (es) es.close();
+  es = new EventSource("/v1/stream");
+  es.onopen = () => setStatus(true, "live");
+  es.onerror = () => setStatus(false, "reconnecting…");
+  es.onmessage = (m) => {
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    if (msg.kind === "event") {
+      if (!EVENTS.some((s) => s.seq === msg.seq)) EVENTS.push(msg);
+      EVENTS.sort((a, b) => a.seq - b.seq);
+      if (EVENTS.length > EVENT_CAP) EVENTS.splice(0, EVENTS.length - EVENT_CAP);
+      renderNetwork(EVENTS);
+      renderFiles(EVENTS);
+    } else if (msg.kind === "violation") {
+      VIOLATIONS.push(msg);
+      VIOLATIONS.sort((a, b) => b.seq - a.seq);
+      renderViolations(VIOLATIONS);
+    }
+  };
+}
+
+$("apply").addEventListener("click", async () => {
+  const out = $("apply-result");
+  try {
+    const body = JSON.parse($("policy-json").value);
+    const res = await fetch("/v1/policy", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error((await res.json()).error || res.status);
+    RULES = body;
+    out.className = "ok";
+    out.textContent = "policy applied";
+    renderNetwork(EVENTS);
+    renderFiles(EVENTS);
+  } catch (err) {
+    out.className = "err";
+    out.textContent = String(err.message || err);
+  }
+  setTimeout(() => { out.textContent = ""; }, 4000);
+});
+
+$("policy-json").value = JSON.stringify(DEFAULT_RULES, null, 2);
+
+poll();
+connectStream();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

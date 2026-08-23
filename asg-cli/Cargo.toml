@@ -1,0 +1,25 @@
+[package]
+name = "asg-cli"
+description = "AgentScope command line: serve the dashboard, replay corpora, benchmark the policy engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "agentscope"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+asg-api = { workspace = true }
+asg-collector = { workspace = true }
+asg-common = { workspace = true }
+asg-policy = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

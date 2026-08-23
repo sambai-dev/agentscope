@@ -1,0 +1,25 @@
+[package]
+name = "asg-ebpf"
+description = "AgentScope eBPF probes: exec, connect and openat tracepoints"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+
+[dependencies]
+aya-ebpf = { version = "0.1" }
+aya-log-ebpf = { version = "0.1" }
+
+[[bin]]
+name = "asg-ebpf"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 3
+[profile.release]
+lto = true
+panic = "abort"
+codegen-units = 1
+
+[workspace]
