@@ -17,9 +17,27 @@ one compact JSON record per event. Identity fields come from
 `bpf_get_current_pid_tgid()`, `bpf_get_current_comm()` and
 `bpf_ktime_get_ns()`.
 
-`ts_ns` is CLOCK_MONOTONIC (kernel monotonic clock), not wall time; the
-userspace pipeline reconciles it against ingest time when ordering the
-dashboard timeline.
+## Timestamp domain
+
+`ts_ns` comes from `bpf_ktime_get_ns()`: **CLOCK_MONOTONIC nanoseconds since
+boot**, not UNIX epoch wall time. It is *not* comparable with the
+simulator/replay corpus, which stamps UNIX-epoch nanoseconds. Userspace does
+**not** reconcile the two clock domains today — ordering/joining across
+sources is future work (see the README roadmap). Do not interpret a kernel
+`ts_ns` as a wall-clock time.
+
+## From record to event (widening)
+
+The userspace collector parses these identity-only records into
+`asg_common::events::KernelRecord` and widens them into the full `Event`
+schema using inert sentinel placeholders documented in
+`asg-common/src/events.rs` (`ppid = 0`, `uid = u32::MAX`, empty `args`,
+`path`, `daddr`; no observation data is fabricated). Records that fail to
+parse or claim an unproducible kind are counted on `/api/metrics`
+(`asg_source_records_ingested_total`,
+`asg_source_records_dropped_malformed_total`); when a live source has
+dropped every record so far and ingested none, `/healthz` reports
+`503 degraded`.
 
 ## Honest limitations (current)
 

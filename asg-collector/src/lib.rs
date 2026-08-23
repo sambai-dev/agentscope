@@ -5,6 +5,8 @@ pub mod pipe;
 pub mod source;
 
 use asg_common::events::Event;
+use asg_common::stats::SourceRecordStats;
+use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 
@@ -49,16 +51,31 @@ pub fn set_kernel_object_path(path: impl Into<String>) {
 #[cfg(not(target_os = "linux"))]
 pub fn set_kernel_object_path(_path: impl Into<String>) {}
 
+/// Starts the requested source and spawns its event loop.
+///
+/// `stats` receives raw ring-buffer record counts (ingested vs dropped/
+/// malformed). Only the kernel source writes them; the simulated source
+/// produces no ring records, so on non-Linux hosts the handle is accepted
+/// for signature parity and left untouched.
 #[cfg(target_os = "linux")]
-pub async fn start(mode: SourceMode, tx: Sender<Event>) -> Result<JoinHandle<()>, CollectorError> {
+pub async fn start(
+    mode: SourceMode,
+    tx: Sender<Event>,
+    stats: Arc<SourceRecordStats>,
+) -> Result<JoinHandle<()>, CollectorError> {
     match mode {
-        SourceMode::Kernel => source::linux::start(tx).await,
+        SourceMode::Kernel => source::linux::start(tx, stats).await,
         SourceMode::Simulated => Ok(tokio::spawn(source::sim::run(tx))),
     }
 }
 
+/// Non-Linux variant: kernel mode is unsupported and `stats` is unused.
 #[cfg(not(target_os = "linux"))]
-pub async fn start(mode: SourceMode, tx: Sender<Event>) -> Result<JoinHandle<()>, CollectorError> {
+pub async fn start(
+    mode: SourceMode,
+    tx: Sender<Event>,
+    _stats: Arc<SourceRecordStats>,
+) -> Result<JoinHandle<()>, CollectorError> {
     match mode {
         SourceMode::Kernel => Err(CollectorError::UnsupportedPlatform),
         SourceMode::Simulated => Ok(tokio::spawn(source::sim::run(tx))),

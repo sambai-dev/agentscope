@@ -104,7 +104,10 @@ async fn serve(port: u16, mode: SourceMode, bpf_path: String) -> Result<()> {
     let (state, _stream_rx) = AppState::new(RuleSet::default());
     let (tx, rx) = pipe::make_channel(pipe::DEFAULT_CHANNEL_CAPACITY);
 
-    let source_task = asg_collector::start(mode, tx)
+    // The kernel source reports raw ring-buffer record counts through the
+    // same Arc that /api/metrics renders and /healthz inspects.
+    let source_stats = state.metrics.source_stats();
+    let source_task = asg_collector::start(mode, tx, source_stats)
         .await
         .context("starting event source")?;
     state.set_source_alive(true);

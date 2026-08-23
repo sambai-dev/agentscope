@@ -3,9 +3,10 @@
 //! Counters are atomics; histogram buckets are computed on scrape from a
 //! bounded ring of recent latency samples held in a mutex.
 
+use asg_common::stats::SourceRecordStats;
 use asg_policy::Severity;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Latency bucket edges in milliseconds (`le` values, inclusive).
 pub const INGEST_LATENCY_BUCKETS_MS: [f64; 7] = [0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
@@ -19,6 +20,10 @@ pub struct Metrics {
     violations_critical_total: AtomicU64,
     violations_warn_total: AtomicU64,
     ingest_latency_ms_samples: Mutex<Vec<f64>>,
+    /// Raw kernel ring-buffer record counters; the collector source holds an
+    /// [`Arc`] to the same instance and is its only writer (zero on hosts
+    /// running the simulated source).
+    source_stats: Arc<SourceRecordStats>,
 }
 
 impl Metrics {
@@ -30,7 +35,14 @@ impl Metrics {
             violations_critical_total: AtomicU64::new(0),
             violations_warn_total: AtomicU64::new(0),
             ingest_latency_ms_samples: Mutex::new(Vec::new()),
+            source_stats: Arc::new(SourceRecordStats::new()),
         }
+    }
+
+    /// Handle to the shared kernel-source record counters for handing to
+    /// `asg_collector::start`, which increments them from the poll loop.
+    pub fn source_stats(&self) -> Arc<SourceRecordStats> {
+        Arc::clone(&self.source_stats)
     }
 
     pub fn inc_events(&self) {
@@ -80,6 +92,23 @@ impl Metrics {
         out.push_str("# HELP asg_events_total Kernel events ingested.\n");
         out.push_str("# TYPE asg_events_total counter\n");
         out.push_str(&format!("asg_events_total {events}\n"));
+
+        let src_ingested = self.source_stats.ingested();
+        let src_dropped = self.source_stats.dropped_malformed();
+        out.push_str(
+            "# HELP asg_source_records_ingested_total Raw kernel ring-buffer records parsed, widened and forwarded by the eBPF source (0 on simulated sources).\n",
+        );
+        out.push_str("# TYPE asg_source_records_ingested_total counter\n");
+        out.push_str(&format!(
+            "asg_source_records_ingested_total {src_ingested}\n"
+        ));
+        out.push_str(
+            "# HELP asg_source_records_dropped_malformed_total Raw kernel ring-buffer records discarded as malformed or of an unproducible kind.\n",
+        );
+        out.push_str("# TYPE asg_source_records_dropped_malformed_total counter\n");
+        out.push_str(&format!(
+            "asg_source_records_dropped_malformed_total {src_dropped}\n"
+        ));
 
         out.push_str("# HELP asg_violations_total Policy violations emitted.\n");
         out.push_str("# TYPE asg_violations_total counter\n");
@@ -146,5 +175,25 @@ mod tests {
             m.observe_ingest_latency_ms(i as f64);
         }
         assert!(m.ingest_latency_ms_samples.lock().unwrap().len() <= LATENCY_SAMPLE_CAP);
+    }
+
+    #[test]
+    fn source_record_families_render_shared_counters() {
+        let m = Metrics::new();
+        // Zeroed families are always exposed so scrapes stay stable.
+        let text = m.render();
+        assert!(text.contains("asg_source_records_ingested_total 0\n"));
+        assert!(text.contains("asg_source_records_dropped_malformed_total 0\n"));
+
+        // The Arc handed to the collector writes through to the render.
+        let stats = m.source_stats();
+        stats.inc_ingested();
+        stats.inc_ingested();
+        stats.inc_dropped_malformed();
+        let text = m.render();
+        assert!(text.contains("asg_source_records_ingested_total 2\n"));
+        assert!(text.contains("asg_source_records_dropped_malformed_total 1\n"));
+        assert_eq!(stats.ingested(), 2);
+        assert_eq!(stats.dropped_malformed(), 1);
     }
 }

@@ -107,11 +107,25 @@ C3. binary elevates privileges              → CAP_ESCALATION (simulated/replay
 
 | Rule id | Severity | Trigger | Probe | Example evidence |
 | --- | --- | --- | --- | --- |
-| `PROC_DENIED` | critical | comm basename in `denied_processes` | sched_process_exec | `{comm, args}` |
-| `SECRET_ACCESS` | critical | open path matches `secret_path_globs` | sys_enter_openat | `{path, matched_globs}` |
-| `NET_DENIED` | critical | daddr matches `denied_hosts` | sys_enter_connect | `{host, dport}` |
-| `NET_WARN` | medium | daddr matches `warn_hosts` | sys_enter_connect | `{host, dport}` |
+| `PROC_DENIED` | critical | comm basename in `denied_processes` | sched_process_exec | `{comm, args}` † |
+| `SECRET_ACCESS` | critical | open path matches `secret_path_globs` | sys_enter_openat | `{path, matched_globs}` † |
+| `NET_DENIED` | critical | daddr matches `denied_hosts` | sys_enter_connect | `{host, dport}` † |
+| `NET_WARN` | medium | daddr matches `warn_hosts` | sys_enter_connect | `{host, dport}` † |
 | `CAP_ESCALATION` | high | capability escalation observed | simulated/replay only (eBPF probe: roadmap) | `{caps}` |
+
+† **Not producible by the kernel source yet.** eBPF ring records carry
+identity fields only (`type`/`pid`/`tgid`/`comm`/`ts_ns`); userspace widens
+them into the full event schema with inert sentinels (empty `args`, `path`,
+`daddr`; see `asg-common::events::KernelRecord::widen`) rather than inventing
+observation data. Consequences today:
+
+- `args`, `path`, and `daddr`/`dport` evidence appears only for
+  simulator/replay-sourced events until tracepoint argument extraction lands.
+- `SECRET_ACCESS`, `NET_DENIED` and `NET_WARN` therefore cannot fire on
+  kernel-sourced events; their triggers depend on the marked evidence fields,
+  which are empty placeholders from that source.
+- `PROC_DENIED` *does* fire on kernel events: its trigger is the `comm`
+  basename, which the probes do capture (evidence shows `args: []`).
 
 ## 6. Guarantees
 
@@ -147,4 +161,7 @@ C3. binary elevates privileges              → CAP_ESCALATION (simulated/replay
 3. Keep `denied_processes` tight but real: blocking every package manager may
    break legitimate flows — pair deny with a review workflow.
 4. Treat probe-attach failures (logged at startup) as incidents: partial
-   coverage is silent to the workload otherwise.
+   coverage is silent to the workload otherwise. A live source that parses
+   nothing (`asg_source_records_dropped_malformed_total` climbing while
+   `asg_source_records_ingested_total` stays 0) degrades `/healthz`; alert
+   on it the same way.

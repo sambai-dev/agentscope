@@ -145,6 +145,18 @@ impl AppState {
     pub fn source_alive(&self) -> bool {
         self.source_alive.load(Ordering::SeqCst)
     }
+
+    /// Returns `true` when a live kernel source is capturing nothing: it has
+    /// dropped at least one raw record and successfully ingested zero. That
+    /// is operationally equivalent to a dead source (no events can flow), so
+    /// readiness must degrade the same way.
+    ///
+    /// Always `false` for the simulated source, which produces no ring
+    /// records and never touches the counters.
+    pub fn source_dropping_all_records(&self) -> bool {
+        let stats = self.metrics.source_stats();
+        stats.dropped_malformed() > 0 && stats.ingested() == 0
+    }
 }
 
 /// Errors surfaced to API callers as JSON bodies.
@@ -185,19 +197,28 @@ async fn index() -> Html<&'static str> {
 /// Readiness probe: `200 {"status":"ok"}` while the configured event source
 /// (simulated or eBPF collector) is producing, otherwise `503` degraded so
 /// orchestrators stop routing to an instance that cannot observe events.
+///
+/// A live kernel source that has dropped every record so far (dropped > 0,
+/// ingested == 0) degrades too: the collector is up but capture is blind.
 async fn healthz(State(st): State<Arc<AppState>>) -> Response {
-    if st.source_alive() {
-        Json(json!({ "status": "ok" })).into_response()
-    } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "status": "degraded",
-                "reason": "event source not running",
-            })),
-        )
-            .into_response()
+    if !st.source_alive() {
+        return degraded_healthz("event source not running");
     }
+    if st.source_dropping_all_records() {
+        return degraded_healthz("kernel source dropping all ring-buffer records");
+    }
+    Json(json!({ "status": "ok" })).into_response()
+}
+
+fn degraded_healthz(reason: &str) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "status": "degraded",
+            "reason": reason,
+        })),
+    )
+        .into_response()
 }
 
 async fn api_metrics(State(st): State<Arc<AppState>>) -> impl IntoResponse {
@@ -649,6 +670,41 @@ mod tests {
         let body = healthz_body(State(state)).await;
         assert_eq!(body.0, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body.1["status"], "degraded");
+    }
+
+    #[tokio::test]
+    async fn healthz_degrades_while_kernel_source_drops_every_record() {
+        let (state, _rx) = AppState::new(RuleSet::default());
+        state.set_source_alive(true);
+
+        // No drops yet (fresh attach): still ok.
+        let body = healthz_body(State(state.clone())).await;
+        assert_eq!(body.0, StatusCode::OK);
+
+        // Kernel source alive but every record so far was malformed: blind
+        // capture degrades exactly like a dead source.
+        state.metrics.source_stats().inc_dropped_malformed();
+        state.metrics.source_stats().inc_dropped_malformed();
+        let body = healthz_body(State(state.clone())).await;
+        assert_eq!(body.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.1["status"], "degraded");
+        assert_eq!(
+            body.1["reason"],
+            "kernel source dropping all ring-buffer records"
+        );
+
+        // First successful ingest proves the wire works again: ok even
+        // though earlier drops are still counted in /api/metrics.
+        state.metrics.source_stats().inc_ingested();
+        let body = healthz_body(State(state.clone())).await;
+        assert_eq!(body.0, StatusCode::OK);
+        assert_eq!(body.1["status"], "ok");
+
+        // Source death keeps its original reason string.
+        state.set_source_alive(false);
+        let body = healthz_body(State(state)).await;
+        assert_eq!(body.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.1["reason"], "event source not running");
     }
 
     #[test]

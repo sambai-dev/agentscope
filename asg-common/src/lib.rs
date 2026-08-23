@@ -2,4 +2,5 @@
 
 pub mod events;
 pub mod policy_types;
+pub mod stats;
 pub mod timeutil;

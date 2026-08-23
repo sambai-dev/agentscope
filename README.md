@@ -98,11 +98,13 @@ cargo install bpf-linker
 sudo ./target/release/agentscope serve --source kernel --bpf-path bpf/asg.bpf.o
 ```
 
+Kernel-sourced events carry identity fields only (type/pid/tgid/comm/ts_ns) — see [Limitations](#limitations).
+
 ## API
 
 | Route | Method | Description |
 | --- | --- | --- |
-| `/healthz` | GET | Readiness probe: `200 {"status":"ok"}` while the configured event source (simulated or eBPF collector) is producing, `503 {"status":"degraded"}` otherwise |
+| `/healthz` | GET | Readiness probe: `200 {"status":"ok"}` while the configured event source (simulated or eBPF collector) is producing, `503 {"status":"degraded"}` otherwise — including a live kernel source that has dropped every record so far |
 | `/api/metrics` | GET | Prometheus text format (hand-written exposition) |
 | `/v1/events` | POST | Ingest one event or an array of events |
 | `/v1/events?limit&since_seq` | GET | Stored events with monotonic sequence numbers |
@@ -142,13 +144,16 @@ Non-guarantees: we cannot inspect encrypted payloads; a root attacker can unload
 ## Limitations
 
 - Collection is Linux-only (kernel ≥ 5.8); Windows/macOS run the simulated source.
-- The eBPF probes currently emit identity fields only (pid/tgid/comm/ts); argv, destination addresses and open paths arrive via the simulator/replay corpus until argument extraction lands (roadmap).
+- The eBPF probes emit identity fields only (`type`/`pid`/`tgid`/`comm`/`ts_ns`). Kernel records are widened into the full event schema with documented inert sentinels (`asg-common::events::KernelRecord::widen`) — no argv/path/host data is invented — so rules keyed on arguments, paths or destinations fire only on the simulator/replay corpus until argument extraction lands (roadmap). Raw-record health is visible on `/api/metrics` (`asg_source_records_ingested_total`, `asg_source_records_dropped_malformed_total`), and `/healthz` reports `503 degraded` if a live kernel source has dropped every record so far.
+- Kernel `ts_ns` is CLOCK_MONOTONIC nanoseconds since boot (`bpf_ktime_get_ns`), not UNIX time; the simulator/replay corpus is UNIX-epoch nanoseconds. The domains are not reconciled yet (roadmap).
 - No container-escape detection yet.
 - State is in-memory only; restarts lose history.
 
 ## Roadmap
 
 - LSM BPF programs for true enforcement (deny, not just alert).
+- Tracepoint argument extraction (`argv`, open paths, connect destinations) so kernel-sourced events carry full evidence.
+- Reconciling kernel CLOCK_MONOTONIC `ts_ns` with UNIX-epoch event timestamps into one clock domain.
 - cgroup-scope attachment for container-native attribution.
 - ClickHouse archive for long-retention forensics.
 - Multi-host collectors fan-in via NATS.

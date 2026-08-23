@@ -301,4 +301,31 @@ mod tests {
         assert_eq!(v[0].rule_id, "CAP_ESCALATION");
         assert_eq!(v[0].severity, Severity::High);
     }
+
+    #[test]
+    fn widened_kernel_records_cannot_fabricate_path_or_host_violations() {
+        // Kernel records widen with empty path/daddr sentinels; no default
+        // rule may fire off that absence. comm-based rules still work.
+        let rules = RuleSet::default();
+        for (kind, comm, expected) in [
+            ("proc_exec", "npm", "PROC_DENIED"),
+            ("proc_exec", "bash", ""),
+            ("file_open", "cat", ""),
+            ("net_connect", "curl", ""),
+        ] {
+            let raw = format!(
+                "{{\"type\":\"{kind}\",\"pid\":1,\"tgid\":2,\"comm\":\"{comm}\",\"ts_ns\":3}}"
+            );
+            let rec: asg_common::events::KernelRecord =
+                serde_json::from_str(&raw).expect("probe-shaped record must parse");
+            let event = rec.widen().expect("kernel-producible kind");
+            let violations = eval(&event, &rules);
+            let ids: Vec<&str> = violations.iter().map(|v| v.rule_id.as_str()).collect();
+            if expected.is_empty() {
+                assert!(ids.is_empty(), "{kind}/{comm}: expected no violations");
+            } else {
+                assert_eq!(ids, [expected], "{kind}/{comm}");
+            }
+        }
+    }
 }
