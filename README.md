@@ -87,6 +87,7 @@ Replay the full corpus through the pipeline without serving:
 
 ```bash
 cargo run -p asg-cli -- replay --file examples/scenario.jsonl
+# add --lenient to skip malformed lines with a warning instead of aborting
 ```
 
 Real eBPF collection (Linux, root, kernel 5.8+):
@@ -106,13 +107,15 @@ Kernel-sourced events carry identity fields only (type/pid/tgid/comm/ts_ns) — 
 | --- | --- | --- |
 | `/healthz` | GET | Readiness probe: `200 {"status":"ok"}` while the configured event source (simulated or eBPF collector) is producing, `503 {"status":"degraded"}` otherwise — including a live kernel source that has dropped every record so far |
 | `/api/metrics` | GET | Prometheus text format (hand-written exposition) |
-| `/v1/events` | POST | Ingest one event or an array of events |
-| `/v1/events?limit&since_seq` | GET | Stored events with monotonic sequence numbers |
+| `/v1/events` | POST | Ingest one event or an array of events (reply reports `accepted`/`rejected`; rejections are ingest-backpressure sheds) |
+| `/v1/events?limit&since_seq` | GET | Forward-cursor paging: the oldest `limit` events in ascending seq order, starting strictly after `since_seq` (omit it for the first page — seqs start at 0); feed back the last seen seq until the page comes back empty |
 | `/v1/processes` | GET | Live process forest built from `proc_exec` events |
 | `/v1/violations?limit` | GET | Policy violations, newest last |
 | `/v1/policy` | PUT | Replace the active rule set (audit-logged) |
 | `/v1/stream` | GET | Server-Sent Events feed of live events + violations |
 | `/` | GET | Embedded security dashboard |
+
+Ingest is backpressure-limited by the rule set's `max_events_per_sec`: a token bucket with a one-second burst capacity, enforced inside the ingest pipeline. Shed events are counted in `asg_events_dropped_rate_limited_total` on `/api/metrics` and reported as `rejected` by `POST /v1/events`.
 
 ## Dashboard
 

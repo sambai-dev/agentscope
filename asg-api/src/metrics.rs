@@ -16,6 +16,7 @@ const LATENCY_SAMPLE_CAP: usize = 8_192;
 /// Process-wide counters and histograms for the API surface.
 pub struct Metrics {
     events_total: AtomicU64,
+    events_dropped_rate_limited_total: AtomicU64,
     violations_total: AtomicU64,
     violations_critical_total: AtomicU64,
     violations_warn_total: AtomicU64,
@@ -31,6 +32,7 @@ impl Metrics {
     pub fn new() -> Self {
         Self {
             events_total: AtomicU64::new(0),
+            events_dropped_rate_limited_total: AtomicU64::new(0),
             violations_total: AtomicU64::new(0),
             violations_critical_total: AtomicU64::new(0),
             violations_warn_total: AtomicU64::new(0),
@@ -47,6 +49,12 @@ impl Metrics {
 
     pub fn inc_events(&self) {
         self.events_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts an event shed by ingest backpressure (`max_events_per_sec`).
+    pub fn inc_dropped_rate_limited(&self) {
+        self.events_dropped_rate_limited_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_violation(&self, severity: Severity) {
@@ -77,6 +85,9 @@ impl Metrics {
     /// Renders the metrics registry in Prometheus text exposition format.
     pub fn render(&self) -> String {
         let events = self.events_total.load(Ordering::Relaxed);
+        let dropped_rate_limited = self
+            .events_dropped_rate_limited_total
+            .load(Ordering::Relaxed);
         let violations = self.violations_total.load(Ordering::Relaxed);
         let critical = self.violations_critical_total.load(Ordering::Relaxed);
         let warn = self.violations_warn_total.load(Ordering::Relaxed);
@@ -92,6 +103,14 @@ impl Metrics {
         out.push_str("# HELP asg_events_total Kernel events ingested.\n");
         out.push_str("# TYPE asg_events_total counter\n");
         out.push_str(&format!("asg_events_total {events}\n"));
+
+        out.push_str(
+            "# HELP asg_events_dropped_rate_limited_total Events shed by ingest backpressure (rule set max_events_per_sec token bucket).\n",
+        );
+        out.push_str("# TYPE asg_events_dropped_rate_limited_total counter\n");
+        out.push_str(&format!(
+            "asg_events_dropped_rate_limited_total {dropped_rate_limited}\n"
+        ));
 
         let src_ingested = self.source_stats.ingested();
         let src_dropped = self.source_stats.dropped_malformed();

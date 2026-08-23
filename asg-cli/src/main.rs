@@ -9,6 +9,7 @@ use asg_common::policy_types::RuleSet;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How long `serve` waits for in-flight requests to drain after a shutdown
@@ -40,7 +41,8 @@ enum Command {
     /// Feed a JSONL event corpus through the ingest pipeline and exit.
     ///
     /// The input file contains one JSON event object per line (blank lines
-    /// are skipped). Each line carries a `"type"` discriminator of
+    /// are skipped and never counted; reported line numbers refer to the
+    /// real file). Each line carries a `"type"` discriminator of
     /// `proc_exec`, `file_open`, `net_connect` or `cap_escalate`, mirroring
     /// what the eBPF probes emit; see examples/scenario.jsonl for a full
     /// corpus.
@@ -48,6 +50,10 @@ enum Command {
         /// Path to a JSONL event file, e.g. --file examples/scenario.jsonl
         #[arg(long)]
         file: String,
+        /// Skip malformed lines with a stderr warning instead of aborting on
+        /// the first one; the summary reports how many lines were skipped.
+        #[arg(long)]
+        lenient: bool,
     },
 }
 
@@ -93,7 +99,7 @@ async fn main() -> Result<()> {
             source,
             bpf_path,
         } => serve(port, source.into(), bpf_path).await,
-        Command::Replay { file } => replay(&file).await,
+        Command::Replay { file, lenient } => replay(&file, lenient).await,
     }
 }
 
@@ -158,29 +164,128 @@ async fn serve(port: u16, mode: SourceMode, bpf_path: String) -> Result<()> {
     Ok(())
 }
 
-async fn replay(file: &str) -> Result<()> {
+/// Outcome of pushing a corpus through the ingest pipeline.
+#[derive(Debug)]
+struct ReplaySummary {
+    ingested: usize,
+    /// Malformed lines skipped under `--lenient`.
+    skipped: usize,
+    /// Events shed by ingest backpressure (`max_events_per_sec`).
+    throttled: usize,
+    violations: usize,
+    by_rule: BTreeMap<String, usize>,
+}
+
+/// Parses `content` (one JSON event per line, blank lines ignored) and feeds
+/// every event through the pipeline. Line numbers in errors/warnings refer
+/// to the real file, blanks included. Without `lenient`, the first malformed
+/// line aborts with its real line number; with it, bad lines are warned to
+/// stderr and counted.
+fn replay_lines(
+    state: &Arc<AppState>,
+    file: &str,
+    content: &str,
+    lenient: bool,
+) -> Result<ReplaySummary> {
+    let mut summary = ReplaySummary {
+        ingested: 0,
+        skipped: 0,
+        throttled: 0,
+        violations: 0,
+        by_rule: BTreeMap::new(),
+    };
+    for (idx, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parsed = serde_json::from_str::<Event>(line)
+            .with_context(|| format!("{file} line {}: invalid event", idx + 1));
+        let event = match parsed {
+            Ok(event) => event,
+            Err(err) if lenient => {
+                eprintln!("warning: skipping {err:#}");
+                summary.skipped += 1;
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
+        if asg_api::ingest(state, event) {
+            summary.ingested += 1;
+        } else {
+            summary.throttled += 1;
+        }
+    }
+    let violations = state
+        .violations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for v in violations.iter() {
+        *summary
+            .by_rule
+            .entry(v.violation.rule_id.clone())
+            .or_default() += 1;
+    }
+    summary.violations = violations.len();
+    Ok(summary)
+}
+
+async fn replay(file: &str, lenient: bool) -> Result<()> {
     init_tracing();
     let (state, _rx) = AppState::new(RuleSet::default());
     let content = std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?;
+    let summary = replay_lines(&state, file, &content, lenient)?;
 
-    let mut ingested = 0usize;
-    for (idx, line) in content.lines().filter(|l| !l.trim().is_empty()).enumerate() {
-        let event: Event = serde_json::from_str(line)
-            .with_context(|| format!("{} line {}: invalid event", file, idx + 1))?;
-        asg_api::ingest(&state, event);
-        ingested += 1;
-    }
-
-    let violations = state.violations.lock().unwrap();
-    let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
-    for v in violations.iter() {
-        *by_rule.entry(v.violation.rule_id.as_str()).or_default() += 1;
-    }
-
-    println!("replayed {ingested} events from {file}");
-    println!("violations: {}", violations.len());
-    for (rule, count) in by_rule {
+    println!("replayed {} events from {file}", summary.ingested);
+    println!("violations: {}", summary.violations);
+    for (rule, count) in &summary.by_rule {
         println!("  {rule:<18} x{count}");
     }
+    if summary.skipped > 0 {
+        println!("skipped {} malformed lines", summary.skipped);
+    }
+    if summary.throttled > 0 {
+        println!("rate-limited {} events", summary.throttled);
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GOOD: &str = r#"{"type":"file_open","pid":1,"tgid":2,"comm":"cat","path":"notes.txt","flags":0,"ts_ns":1,"is_write_hint":false}"#;
+    const SECRET: &str = r#"{"type":"file_open","pid":3,"tgid":4,"comm":"cat","path":".env","flags":0,"ts_ns":2,"is_write_hint":false}"#;
+
+    #[test]
+    fn strict_replay_aborts_with_real_file_line_number() {
+        // Blank line between the good and bad lines must still count toward
+        // the reported number: the bad JSON really is on file line 3.
+        let content = format!("{GOOD}\n\n{{not json}}\n{SECRET}\n");
+        let (state, _rx) = AppState::new(RuleSet::default());
+        let err = replay_lines(&state, "corpus.jsonl", &content, false)
+            .expect_err("malformed line must abort in strict mode");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("corpus.jsonl line 3"), "got: {msg}");
+        assert!(msg.contains("invalid event"), "got: {msg}");
+        // Nothing after the bad line was ingested.
+        assert_eq!(state.events.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn lenient_replay_skips_bad_lines_and_counts_them() {
+        let content = format!("{GOOD}\n   \n{{not json}}\n{SECRET}\nalso bad\n");
+        let (state, _rx) = AppState::new(RuleSet::default());
+        let summary = replay_lines(&state, "corpus.jsonl", &content, true)
+            .expect("lenient mode must not fail");
+        assert_eq!(summary.ingested, 2);
+        assert_eq!(summary.skipped, 2);
+        assert_eq!(summary.violations, 1, "the .env read raises SECRET_ACCESS");
+        assert_eq!(summary.by_rule.get("SECRET_ACCESS"), Some(&1));
+        // Blank lines were never counted anywhere.
+        assert_eq!(
+            state.events.lock().unwrap().len(),
+            2,
+            "blank line must not consume an ingest slot"
+        );
+    }
 }

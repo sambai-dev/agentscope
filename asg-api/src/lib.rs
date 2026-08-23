@@ -47,6 +47,47 @@ pub const VIOLATION_CAP: usize = 5_000;
 /// Broadcast channel capacity for SSE subscribers.
 pub const STREAM_CAPACITY: usize = 1_024;
 
+/// Refillable token bucket enforcing the rule set's `max_events_per_sec`
+/// on the ingest path. Capacity is one second's worth of tokens, so short
+/// bursts are absorbed while sustained floods are shed instead of evicting
+/// audit history from the event ring.
+#[derive(Debug)]
+pub struct RateBucket {
+    tokens: f64,
+    last: Option<Instant>,
+}
+
+impl RateBucket {
+    /// Creates an empty bucket; the first acquisition fills it to capacity.
+    fn new() -> Self {
+        Self {
+            tokens: 0.0,
+            last: None,
+        }
+    }
+
+    /// Attempts to take one token at instant `now`, refilling proportionally
+    /// to elapsed time and capping the balance at one second's worth of
+    /// tokens. Deterministic given `(rate, now)`.
+    fn try_acquire(&mut self, rate_per_sec: u32, now: Instant) -> bool {
+        let capacity = rate_per_sec.max(1) as f64;
+        match self.last {
+            Some(prev) => {
+                let elapsed = now.saturating_duration_since(prev).as_secs_f64();
+                self.tokens = (self.tokens + elapsed * capacity).min(capacity);
+            }
+            None => self.tokens = capacity,
+        }
+        self.last = Some(now);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// An event with its monotonically assigned sequence number.
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredEvent {
@@ -110,6 +151,8 @@ pub struct AppState {
     pub processes: Mutex<HashMap<u32, ProcRecord>>,
     pub violations: Mutex<VecDeque<StoredViolation>>,
     pub ruleset: RwLock<RuleSet>,
+    /// Ingest backpressure state enforcing `ruleset.max_events_per_sec`.
+    pub rate_bucket: Mutex<RateBucket>,
     pub metrics: Arc<Metrics>,
     pub next_seq: AtomicU64,
     pub tx: broadcast::Sender<StreamMsg>,
@@ -128,6 +171,7 @@ impl AppState {
             processes: Mutex::new(HashMap::new()),
             violations: Mutex::new(VecDeque::new()),
             ruleset: RwLock::new(ruleset),
+            rate_bucket: Mutex::new(RateBucket::new()),
             metrics: Arc::new(Metrics::new()),
             next_seq: AtomicU64::new(0),
             tx,
@@ -242,10 +286,16 @@ async fn post_events(
         _ => vec![serde_json::from_value(value)
             .map_err(|e| ApiError::BadRequest(format!("invalid event: {e}")))?],
     };
+    let mut accepted = 0usize;
     for event in &events {
-        ingest(&st, event.clone());
+        if ingest(&st, event.clone()) {
+            accepted += 1;
+        }
     }
-    Ok(Json(json!({ "accepted": events.len() })))
+    Ok(Json(json!({
+        "accepted": accepted,
+        "rejected": events.len() - accepted,
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,25 +304,30 @@ struct EventsQuery {
     since_seq: Option<u64>,
 }
 
+/// Forward-cursor page over stored events: returns the OLDEST `limit`
+/// events in ascending sequence order, starting strictly after `since_seq`
+/// (or from the beginning when `since_seq` is omitted — sequence numbers
+/// start at 0, so a bootstrap request must not pass `0` as a cursor). A
+/// client walks the whole ring by feeding back the last seen seq until the
+/// page comes back empty.
 async fn get_events(
     State(st): State<Arc<AppState>>,
     Query(q): Query<EventsQuery>,
 ) -> Json<Vec<StoredEvent>> {
     let limit = q.limit.unwrap_or(500).min(EVENT_CAP);
-    let since = q.since_seq.unwrap_or(0);
     let events = st
         .events
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let out: Vec<StoredEvent> = events
-        .iter()
-        .filter(|e| e.seq > since)
-        .rev()
-        .take(limit)
-        .cloned()
-        .collect();
-    let mut out = out;
-    out.reverse();
+    let iter = events.iter();
+    let out: Vec<StoredEvent> = match q.since_seq {
+        Some(since) => iter
+            .filter(move |e| e.seq > since)
+            .take(limit)
+            .cloned()
+            .collect(),
+        None => iter.take(limit).cloned().collect(),
+    };
     Json(out)
 }
 
@@ -374,10 +429,33 @@ pub async fn shutdown_signal() {
     }
 }
 
-/// Runs one event through the full pipeline: store, process tree, policy,
-/// metrics and broadcast.
-pub fn ingest(st: &Arc<AppState>, event: Event) {
-    let started = Instant::now();
+/// Runs one event through the full pipeline: rate check, store, process
+/// tree, policy, metrics and broadcast. Returns `false` (without storing or
+/// evaluating anything) when ingest backpressure sheds the event because the
+/// rule set's `max_events_per_sec` budget is exhausted; the shed is counted
+/// in the `asg_events_dropped_rate_limited_total` metric.
+pub fn ingest(st: &Arc<AppState>, event: Event) -> bool {
+    ingest_at(st, event, Instant::now())
+}
+
+/// [`ingest`] with an explicit clock reading so backpressure behavior is
+/// deterministically testable.
+fn ingest_at(st: &Arc<AppState>, event: Event, now: Instant) -> bool {
+    let started = now;
+    let rules = st
+        .ruleset
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let allowed = st
+        .rate_bucket
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .try_acquire(rules.max_events_per_sec, now);
+    if !allowed {
+        st.metrics.inc_dropped_rate_limited();
+        return false;
+    }
     st.metrics.inc_events();
 
     if let Event::ProcExec {
@@ -421,11 +499,6 @@ pub fn ingest(st: &Arc<AppState>, event: Event) {
         events.push_back(stored.clone());
     }
 
-    let rules = st
-        .ruleset
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
     for violation in eval(&stored.event, &rules) {
         let severity = violation.severity;
         let stored_violation = StoredViolation::new(
@@ -449,6 +522,7 @@ pub fn ingest(st: &Arc<AppState>, event: Event) {
     let _ = st.tx.send(StreamMsg::Event(stored));
     st.metrics
         .observe_ingest_latency_ms(started.elapsed().as_secs_f64() * 1_000.0);
+    true
 }
 
 /// Clamps a wall-clock nanosecond reading forward so emitted timestamps never
@@ -562,6 +636,7 @@ pub fn build_process_forest(records: &[ProcRecord]) -> Vec<ProcNode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn rec(tgid: u32, ppid: u32, ts: u64) -> ProcRecord {
         ProcRecord {
@@ -722,6 +797,152 @@ mod tests {
         assert_eq!(monotonic_now_ns(202, &guard), 203);
         // Real time is honored again once it catches up past the clamp.
         assert_eq!(monotonic_now_ns(1_000, &guard), 1_000);
+    }
+
+    fn open_event(path: &str, ts: u64) -> Event {
+        Event::FileOpen {
+            pid: 1,
+            tgid: 2,
+            comm: "cat".into(),
+            path: path.into(),
+            flags: 0,
+            ts_ns: ts,
+            is_write_hint: false,
+        }
+    }
+
+    #[test]
+    fn rate_bucket_bursts_then_sheds_and_refills() {
+        let t0 = Instant::now();
+        let mut b = RateBucket::new();
+        // Rate 2/s: a two-event burst passes, the third same-instant is shed.
+        assert!(b.try_acquire(2, t0));
+        assert!(b.try_acquire(2, t0));
+        assert!(!b.try_acquire(2, t0));
+        // Half a second refills exactly one token.
+        assert!(b.try_acquire(2, t0 + Duration::from_millis(500)));
+        assert!(!b.try_acquire(2, t0 + Duration::from_millis(500)));
+        // Waiting a minute refills at most one second's worth (the cap).
+        assert!(b.try_acquire(2, t0 + Duration::from_secs(60)));
+        assert!(b.try_acquire(2, t0 + Duration::from_secs(60)));
+        assert!(!b.try_acquire(2, t0 + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn ingest_backpressure_sheds_when_rate_budget_exhausted() {
+        let (state, _rx) = AppState::new(RuleSet::default());
+        *state
+            .ruleset
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = RuleSet {
+            max_events_per_sec: 1,
+            ..RuleSet::default()
+        };
+        let t0 = Instant::now();
+        assert!(ingest_at(&state, open_event(".env", 1), t0));
+        assert!(!ingest_at(&state, open_event(".env", 2), t0));
+        // Shed events leave no trace in the ring or sequence space.
+        assert_eq!(state.events.lock().unwrap().len(), 1);
+        assert_eq!(state.next_seq.load(Ordering::SeqCst), 1);
+        let text = state.metrics.render();
+        assert!(text.contains("asg_events_dropped_rate_limited_total 1\n"));
+        // Budget returns as time passes.
+        assert!(ingest_at(
+            &state,
+            open_event("ok", 3),
+            t0 + Duration::from_secs(1)
+        ));
+    }
+
+    #[tokio::test]
+    async fn events_paging_walks_every_event_exactly_once_in_order() {
+        let (state, _rx) = AppState::new(RuleSet::default());
+        let total = 25u64;
+        for i in 0..total {
+            ingest(
+                &state,
+                Event::FileOpen {
+                    pid: 1,
+                    tgid: 2,
+                    comm: "cat".into(),
+                    path: format!("f{i}"),
+                    flags: 0,
+                    ts_ns: i,
+                    is_write_hint: false,
+                },
+            );
+        }
+
+        let page_size = 10usize;
+        let mut cursor: Option<u64> = None;
+        let mut seen: Vec<u64> = Vec::new();
+        loop {
+            let Json(page) = get_events(
+                State(state.clone()),
+                Query(EventsQuery {
+                    limit: Some(page_size),
+                    since_seq: cursor,
+                }),
+            )
+            .await;
+            assert!(page.len() <= page_size);
+            // Ascending, strictly past the cursor (bootstrap page: any seq).
+            let floor = cursor.unwrap_or(0);
+            for pair in page.windows(2) {
+                assert!(pair[0].seq < pair[1].seq);
+                assert!(pair[1].seq > floor);
+            }
+            if let Some(last) = page.last() {
+                cursor = Some(last.seq);
+            }
+            seen.extend(page.iter().map(|e| e.seq));
+            if seen.len() > total as usize {
+                panic!("pagination produced more events than ingested");
+            }
+            if page.is_empty() {
+                break;
+            }
+        }
+
+        let expected: Vec<u64> = (0..total).collect();
+        assert_eq!(seen, expected, "every event seen exactly once in order");
+    }
+
+    #[test]
+    fn violations_ring_is_bounded_and_keeps_newest() {
+        let (state, _rx) = AppState::new(RuleSet::default());
+        // Every open of a default secret glob raises SECRET_ACCESS.
+        let rounds = u64::try_from(VIOLATION_CAP).unwrap() + 50;
+        for i in 0..rounds {
+            ingest(
+                &state,
+                Event::FileOpen {
+                    pid: 1,
+                    tgid: 2,
+                    comm: "cat".into(),
+                    path: ".env".into(),
+                    flags: 0,
+                    ts_ns: i,
+                    is_write_hint: false,
+                },
+            );
+        }
+        let violations = state
+            .violations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            violations.len(),
+            VIOLATION_CAP,
+            "violation storage must stay capped"
+        );
+        // Oldest survivors are the first `50` dropped; newest kept to the end.
+        assert_eq!(violations.front().unwrap().seq, 50);
+        assert_eq!(violations.back().unwrap().seq, rounds - 1);
+        let seqs: Vec<u64> = violations.iter().map(|v| v.seq).collect();
+        for pair in seqs.windows(2) {
+            assert!(pair[0] < pair[1], "violations must stay in seq order");
+        }
     }
 
     async fn healthz_body(st: State<Arc<AppState>>) -> (StatusCode, serde_json::Value) {
