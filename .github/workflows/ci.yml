@@ -38,6 +38,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: bpf/asg-ebpf
+      - name: Install LLVM (needed by bpf-linker)
+        run: sudo apt-get update && sudo apt-get install -y llvm-dev libclang-dev clang
       - name: Install bpf-linker
         run: cargo install bpf-linker
       - name: Build eBPF program
