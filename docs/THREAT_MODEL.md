@@ -143,6 +143,14 @@ observation data. Consequences today:
 - **Encrypted payloads.** We see the connection, never the contents; exfil
   over an allowed HTTPS host with innocuous volume stays invisible until egress
   rules catch the destination.
+- **Windows path coverage in secret detection.** Secret-path globs are matched
+  against paths normalized by `normalize_path` (Rust) / `normalizePath` (JS).
+  This normalizer handles Windows drive-letter paths (`C:\...`), UNC paths
+  (`//host/share` / `\\host\share`), and verbatim prefixes (`\\?\`, `\\.\`),
+  mapping backslashes to forward slashes and case-folding only on Windows-shaped
+  paths. Pure Unix paths remain case-sensitive. Probe corpora carrying
+  Windows-shaped paths (e.g., from cross-platform CI or WSL) are now correctly
+  matched against secret globs.
 - **Root attackers.** An attacker with CAP_SYS_ADMIN can unload probes, rewrite
   rules via `PUT /v1/policy` if they reach the API, or simply stop the daemon.
 - **TOCTOU on path rules.** Path-based matching sees the requested pathname;

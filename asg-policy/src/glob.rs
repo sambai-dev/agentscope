@@ -10,6 +10,12 @@
 //! any build step or JS tooling. THE TWO COPIES MUST CHANGE TOGETHER: if you
 //! touch matching semantics here, update the JS copy AND its adjacent
 //! conformance-vector comment in the same commit.
+//!
+//! NORMALIZATION SYNC NOTICE: `normalize_path` (Rust, rules.rs) and
+//! `normalizePath` (JS, index.html) are also kept in sync. Conformance vectors
+//! for normalization live in `rules.rs` (`normalize_path_windows_vectors`) and
+//! are mirrored in the JS comment below `normalizePath`. If you change
+//! normalization, update BOTH test vectors and the JS comment.
 
 /// Returns true when `text` is matched by `pattern`.
 pub fn matches(pattern: &str, text: &str) -> bool {
@@ -60,6 +66,12 @@ mod tests {
     /// `*` within one segment but never across `/`, `?` exactly-one-char,
     /// literal mismatches and segment-boundary behavior. Keep the JS list
     /// byte-identical so divergence stays greppable.
+    ///
+    /// NOTE: Path normalization conformance vectors (for `normalize_path` /
+    /// `normalizePath`) live in `rules.rs` (`normalize_path_windows_vectors`)
+    /// and are mirrored in the JS comment above `normalizePath` in index.html.
+    /// They are NOT tested here because normalization is a separate step before
+    /// glob matching.
     const DASHBOARD_CONFORMANCE_VECTORS: &[(&str, &str, bool)] = &[
         ("**/.env", "deep/nested/dir/.env", true),
         (".ssh/**", ".ssh/id_rsa", true),

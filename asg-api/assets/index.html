@@ -222,6 +222,21 @@ const $ = (id) => document.getElementById(id);
 //   a/*/c            | a/b/d/c              | false
 //   file?            | fileAB               | false
 //   **/*wallet*      | users/bob/wallet.dat | true
+// NORMALIZATION CONFORMANCE VECTORS (mirrored from
+// `normalize_path_windows_vectors` in asg-policy/src/rules.rs):
+//   input                          | expected
+//   /home/user/.env                | /home/user/.env
+//   ./.env                         | .env
+//   ././.env                       | .env
+//   C:\Users\x\.env                | c:/users/x/.env
+//   C:\USERS\X\.ENV                | c:/users/x/.env
+//   \\?\C:\Users\x\.env            | c:/users/x/.env
+//   \\.\C:\x\.env                  | c:/x/.env
+//   //server/share/.env            | //server/share/.env
+//   \\server\share\.env            | //server/share/.env
+//   //SERVER/SHARE/.ENV             | //server/share/.env
+//   C:\foo                         | C:/foo        (pathological Unix, single segment, no case-fold)
+//   ./C:\Users\x\.env              | c:/users/x/.env
 function globMatch(pattern, text) {
   const p = pattern.split("/"), t = text.split("/");
   const oneSeg = (pat, txt) => {
@@ -249,10 +264,32 @@ function globMatch(pattern, text) {
 }
 
 // Mirrors asg-policy/src/rules.rs `normalize_path` — see SYNC NOTICE above.
+// Contract (byte-consistent with Rust):
+// 1. Backslashes mapped to forward slashes.
+// 2. Verbatim prefixes \\?\ and \\.\ (become //?/ and //./ after step 1) stripped.
+// 3. Leading ./ stripped repeatedly.
+// 4. Case-fold ENTIRE path only if UNC prefix (//) present OR Windows drive prefix
+//    ([A-Za-z]:/) WITH at least one more path segment (i.e., another '/' after "C:/").
+//    Pure Unix paths stay case-sensitive.
+// 5. Pathological Unix file literally named like "C:\foo" -> "C:/foo" (no case-fold).
 function normalizePath(path) {
-  let p = path;
+  let p = path.replace(/\\/g, "/");
+
+  // Strip Windows verbatim prefixes: //?/ and //./
+  if (p.startsWith("//?/")) p = p.slice(4);
+  else if (p.startsWith("//./")) p = p.slice(4);
+
+  // Strip leading ./ repeatedly
   while (p.startsWith("./")) p = p.slice(2);
-  return p;
+
+  // Detect Windows: UNC prefix (//) OR drive prefix with additional segments
+  const hasDrivePrefix =
+    p.length >= 3 && p[1] === ":" && p[2] === "/" && /^[A-Za-z]$/.test(p[0]);
+  const hasUncPrefix = p.startsWith("//");
+  const hasDriveWithSegments = hasDrivePrefix && p.slice(3).includes("/");
+  const isWindows = hasUncPrefix || hasDriveWithSegments;
+
+  return isWindows ? p.toLowerCase() : p;
 }
 
 function isSecret(path) {

@@ -153,13 +153,58 @@ fn eval_net_connect(
     Vec::new()
 }
 
-/// Strips a leading `./` so globs like `.env` and `**/.env` behave uniformly.
+/// Normalizes a path for glob matching against secret path patterns.
+///
+/// Contract:
+/// 1. All backslashes (`\`) are mapped to forward slashes (`/`).
+/// 2. Verbatim prefixes `\\?\` and `\\.\` (Windows extended-length / device paths)
+///    are stripped entirely.
+/// 3. A leading `./` is stripped repeatedly (so `.env`, `./.env`, `././.env`
+///    all normalize to `.env`).
+/// 4. **Case folding** is applied to the ENTIRE path ONLY when the path has a
+///    Windows drive prefix (`[A-Za-z]:/`) or a UNC prefix (`//host/share` or
+///    `\\host\share` after backslash mapping). Pure Unix paths (no drive/UNC
+///    prefix) remain case-sensitive.
+/// 5. A pathological Unix file literally named like `C:\foo` (no drive prefix,
+///    just a weird filename containing backslashes) is NOT case-folded — it
+///    is treated as a Unix path with backslashes converted to forward slashes
+///    (`C:/foo`), preserving case.
 fn normalize_path(path: &str) -> String {
-    let mut p = path;
-    while let Some(rest) = p.strip_prefix("./") {
-        p = rest;
+    let mut p = path.replace('\\', "/");
+
+    // Strip Windows verbatim prefixes: \\?\ and \\.\ (after backslash->slash: //?/ and //./)
+    if let Some(rest) = p.strip_prefix("//?/") {
+        p = rest.to_string();
+    } else if let Some(rest) = p.strip_prefix("//./") {
+        p = rest.to_string();
     }
-    p.to_string()
+
+    // Strip leading ./ repeatedly
+    while let Some(rest) = p.strip_prefix("./") {
+        p = rest.to_string();
+    }
+
+    // Detect Windows drive prefix (C:/, D:/, etc.) or UNC prefix (//host/share).
+    // A drive-letter path is considered Windows only if it has at least one more
+    // path segment after the drive root (i.e., contains a '/' after "C:/").
+    // This excludes the pathological Unix file literally named "C:\foo" which
+    // becomes "C:/foo" (no additional separator) and stays case-sensitive.
+    let has_drive_prefix = p.len() >= 3
+        && p.as_bytes()[1] == b':'
+        && p.as_bytes()[2] == b'/'
+        && p[..1]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic());
+    let has_unc_prefix = p.starts_with("//");
+    let has_drive_with_segments = has_drive_prefix && p[3..].contains('/');
+    let is_windows = has_unc_prefix || has_drive_with_segments;
+
+    if is_windows {
+        p.to_ascii_lowercase()
+    } else {
+        p
+    }
 }
 
 #[cfg(test)]
@@ -327,5 +372,153 @@ mod tests {
                 assert_eq!(ids, [expected], "{kind}/{comm}");
             }
         }
+    }
+
+    #[test]
+    fn normalize_path_windows_vectors() {
+        let cases: Vec<(&str, &str)> = vec![
+            // Basic Unix paths (unchanged, case-sensitive)
+            ("/home/user/.env", "/home/user/.env"),
+            ("./.env", ".env"),
+            ("././.env", ".env"),
+            ("relative/path", "relative/path"),
+            // Windows drive prefix: backslashes -> forward, case-folded
+            (r"C:\Users\x\.env", "c:/users/x/.env"),
+            (r"C:\USERS\X\.ENV", "c:/users/x/.env"),
+            (r"D:\Secrets\key.pem", "d:/secrets/key.pem"),
+            // Windows verbatim prefixes stripped, then treated as drive paths
+            (r"\\?\C:\Users\x\.env", "c:/users/x/.env"),
+            (r"\\.\C:\x\.env", "c:/x/.env"),
+            (r"\\?\D:\Secrets\key.pem", "d:/secrets/key.pem"),
+            // UNC paths: case-folded
+            (r"//server/share/.env", "//server/share/.env"),
+            (r"\\server\share\.env", "//server/share/.env"),
+            (r"//SERVER/SHARE/.ENV", "//server/share/.env"),
+            // Pathological Unix file literally named like "C:\foo" (single segment
+            // after drive, no subdirectories) — backslashes converted, but NO case
+            // folding because it lacks the multi-segment structure of a real Windows
+            // path. A file literally named "C:\FOO\BAR" (with subdirs) IS case-folded
+            // as it matches Windows path structure.
+            (r"C:\foo", "C:/foo"),
+            // Mixed: leading ./ on Windows paths
+            (r"./C:\Users\x\.env", "c:/users/x/.env"),
+            (r"././C:\Users\x\.env", "c:/users/x/.env"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                normalize_path(input),
+                expected,
+                "normalize_path({:?}) = {:?}, expected {:?}",
+                input,
+                normalize_path(input),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn secret_detection_windows_paths_match_globs() {
+        let rules = RuleSet::default();
+        // Default secret globs include: .ssh/**, **/.ssh/**, .env, **/.env, **/.aws/**, **/.kube/config, **/*wallet*, **/id_rsa*
+        let windows_secret_paths = vec![
+            r"C:\Users\x\.env",
+            r"\\?\C:\x\.env",
+            r"C:\USERS\.Env",
+            r"//server/share/.env",
+            r"\\server\share\.ssh\id_rsa",
+            r"D:\projects\.aws\credentials",
+            r"C:\Users\bob\wallet.dat",
+            r"C:\Users\alice\.kube\config",
+        ];
+        for path in windows_secret_paths {
+            let e = Event::FileOpen {
+                pid: 1,
+                tgid: 2,
+                comm: "cat".into(),
+                path: path.into(),
+                flags: 0,
+                ts_ns: 5,
+                is_write_hint: false,
+            };
+            let v = eval(&e, &rules);
+            assert_eq!(
+                v.len(),
+                1,
+                "path {:?} should trigger SECRET_ACCESS but got no violations",
+                path
+            );
+            assert_eq!(
+                v[0].rule_id, "SECRET_ACCESS",
+                "path {:?} wrong rule id",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn secret_detection_unix_paths_unaffected() {
+        let rules = RuleSet::default();
+        let unix_secret_paths = vec![
+            "/home/user/.env",
+            "/home/user/.ssh/id_rsa",
+            "/home/user/.aws/credentials",
+            "/home/user/.kube/config",
+            "/home/user/wallet.dat",
+        ];
+        for path in unix_secret_paths {
+            let e = Event::FileOpen {
+                pid: 1,
+                tgid: 2,
+                comm: "cat".into(),
+                path: path.into(),
+                flags: 0,
+                ts_ns: 5,
+                is_write_hint: false,
+            };
+            let v = eval(&e, &rules);
+            assert_eq!(
+                v.len(),
+                1,
+                "unix path {:?} should trigger SECRET_ACCESS but got no violations",
+                path
+            );
+            assert_eq!(v[0].rule_id, "SECRET_ACCESS");
+        }
+    }
+
+    #[test]
+    fn secret_detection_case_sensitivity_unix_vs_windows() {
+        let rules = RuleSet::default();
+        // Unix path with different case should NOT match (case-sensitive)
+        let e_unix = Event::FileOpen {
+            pid: 1,
+            tgid: 2,
+            comm: "cat".into(),
+            path: "/HOME/USER/.ENV".into(), // different case
+            flags: 0,
+            ts_ns: 5,
+            is_write_hint: false,
+        };
+        let v = eval(&e_unix, &rules);
+        // Unix paths are case-sensitive; .ENV != .env so no match
+        assert!(v.is_empty(), "Unix path with wrong case should not match");
+
+        // Windows path with different case SHOULD match (case-folded)
+        let e_win = Event::FileOpen {
+            pid: 1,
+            tgid: 2,
+            comm: "cat".into(),
+            path: r"C:\USERS\X\.ENV".into(),
+            flags: 0,
+            ts_ns: 5,
+            is_write_hint: false,
+        };
+        let v = eval(&e_win, &rules);
+        assert_eq!(
+            v.len(),
+            1,
+            "Windows path with different case should match after case-folding"
+        );
+        assert_eq!(v[0].rule_id, "SECRET_ACCESS");
     }
 }
