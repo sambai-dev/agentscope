@@ -1,7 +1,7 @@
 # Launch Q&A — prepared first-comment replies
 
 Short, factual, ready-to-paste replies for likely HN/r/rust objections.
-Every claim traces to the repo as shipped (CI green, v0.1.0 tagged).
+Every claim traces to the repo as shipped and its release artifacts.
 
 ---
 
@@ -63,11 +63,12 @@ question above.
 ## "Why JSON on the ring buffer? Isn't that slow?"
 
 Measured tradeoff, written up in the design notes: binary packing would be
-~5x smaller/faster, but sharing schema crates between no_std eBPF and
-userspace complicates the build matrix badly. At ~620k policy evals/s
-(measured, release build) the userspace side is nowhere near the bottleneck
-for a single workstation's event volume. We chose boring until profiling
-says otherwise — the note says exactly that.
+smaller/faster, but sharing schema crates between no_std eBPF and userspace
+complicates the build matrix. The probe now reserves a fixed RingBuf slot and
+writes escaped JSON directly into it, avoiding both a record-sized stack
+allocation and a second copy. Oversized records are discarded rather than
+emitted as malformed JSON. At ~620k policy evals/s (measured, release build)
+the userspace side is nowhere near the bottleneck for one workstation.
 
 ## "Windows/macOS support is fake then"
 
@@ -90,11 +91,10 @@ onto it for most cases — happy to document that mapping.
 
 ## "Show me it catching something real"
 
-Run it: `cargo run -p asg-cli -- serve`, open :8100, and POST any single
-line of `examples/scenario.jsonl` to `/v1/events` — the timeline flags the
-`.env` read critical and the network map goes amber/red on the egress hit.
-Or replay the whole corpus: `cargo run -p asg-cli -- replay --file
-examples/scenario.jsonl`.
+On Linux, build the probe and run `agentscope serve --source kernel`; opening
+`.env` produces a real `SECRET_ACCESS`, and a configured IP/CIDR rule
+matches real IPv4/IPv6 connect events. For a portable demo, POST any line of
+`examples/scenario.jsonl` or replay the whole corpus with `agentscope replay`.
 
 ## "Numbers?"
 

@@ -51,7 +51,7 @@ On non-Linux hosts the collector runs the simulated source instead of loading `b
 2. **cgroup-scoped attribution is roadmap; pid ancestry is now.** The honest way to attribute events to "the agent" is attaching at its cgroup. Today we link processes by `ppid` ancestry from `proc_exec` events, which works for the common agent-shell-child shape but loses grandchildren whose parents exited.
 3. **Hand-rolled glob matcher.** Secret-path rules need `**`-style matching over ~10 default patterns. Pulling `globset` for that costs compile time and pulls `regex-automata`; our recursive segment matcher is ~60 lines, dependency-free and exhaustively table-tested.
 4. **RingBuf over perf event arrays.** One shared ring preserves global ordering across CPUs, drops samples at the producer (the eBPF program knows), and needs no per-CPU bookkeeping in userspace. Costs a 5.8+ kernel minimum.
-5. **JSON on the wire (yes, really).** Each ring record is one serde_json-encoded event. Binary packing would be ~5x smaller/faster, but sharing schema crates between no_std eBPF and userspace complicates the build matrix; JSON keeps the demo honest and the code boring until profiling says otherwise.
+5. **Zero-copy JSON ring records.** Probes reserve a fixed 512-byte RingBuf slot and write escaped JSON directly into it, avoiding a stack copy while keeping the wire format inspectable and backward-compatible with v0.1 probe objects. A malformed or oversized record is discarded rather than emitted as truncated JSON.
 6. **A deterministic simulator as a first-class source.** Kernel collection can't run on Windows/macOS CI. Simulating the exact 24-event attack scenario keeps the pipeline, policies and dashboard exercised on every commit — see `examples/scenario.jsonl`.
 
 ## Quickstart
@@ -99,7 +99,13 @@ cargo install bpf-linker
 sudo ./target/release/agentscope serve --source kernel --bpf-path bpf/asg.bpf.o
 ```
 
-Kernel-sourced events carry identity fields only (type/pid/tgid/comm/ts_ns) — see [Limitations](#limitations).
+The Linux release archive includes both `agentscope` and `asg.bpf.o`; keep
+them together and pass `--bpf-path ./asg.bpf.o`. Source builds use the command
+above.
+
+Kernel mode captures executable filename/uid/cgroup, requested open path and
+flags, and IPv4/IPv6 connect destination/port. Numeric IPs can be matched by
+exact value, glob, or CIDR in `denied_hosts` and `warn_hosts`.
 
 ## API
 
@@ -147,7 +153,9 @@ Non-guarantees: we cannot inspect encrypted payloads; a root attacker can unload
 ## Limitations
 
 - Collection is Linux-only (kernel ≥ 5.8); Windows/macOS run the simulated source.
-- The eBPF probes emit identity fields only (`type`/`pid`/`tgid`/`comm`/`ts_ns`). Kernel records are widened into the full event schema with documented inert sentinels (`asg-common::events::KernelRecord::widen`) — no argv/path/host data is invented — so rules keyed on arguments, paths or destinations fire only on the simulator/replay corpus until argument extraction lands (roadmap). Raw-record health is visible on `/api/metrics` (`asg_source_records_ingested_total`, `asg_source_records_dropped_malformed_total`), and `/healthz` reports `503 degraded` if a live kernel source has dropped every record so far.
+- Kernel mode supports native 64-bit Linux syscalls. `sched_process_exec` supplies the executable filename as `args[0]`, not the complete argv vector; parent PID remains unknown. Open paths are capped at 255 bytes and visibly marked `<truncated>` when the capture buffer fills.
+- `connect()` exposes numeric IP addresses, not DNS names. Kernel events therefore match exact IPs, IP globs, and CIDRs; hostname globs remain useful for replay/application-sourced events but require future DNS correlation to work against kernel events.
+- Raw-record health is visible on `/api/metrics` (`asg_source_records_ingested_total`, `asg_source_records_dropped_malformed_total`), and `/healthz` reports `503 degraded` if a live kernel source has dropped every record so far.
 - Kernel `ts_ns` is CLOCK_MONOTONIC nanoseconds since boot (`bpf_ktime_get_ns`), not UNIX time; the simulator/replay corpus is UNIX-epoch nanoseconds. The domains are not reconciled yet (roadmap).
 - No container-escape detection yet.
 - State is in-memory only; restarts lose history.
@@ -155,7 +163,8 @@ Non-guarantees: we cannot inspect encrypted payloads; a root attacker can unload
 ## Roadmap
 
 - LSM BPF programs for true enforcement (deny, not just alert).
-- Tracepoint argument extraction (`argv`, open paths, connect destinations) so kernel-sourced events carry full evidence.
+- DNS correlation for numeric connect destinations, with bounded TTL-aware caching.
+- Full exec argv capture with strict byte/argument ceilings.
 - Reconciling kernel CLOCK_MONOTONIC `ts_ns` with UNIX-epoch event timestamps into one clock domain.
 - cgroup-scope attachment for container-native attribution.
 - ClickHouse archive for long-retention forensics.

@@ -1,10 +1,10 @@
 //! Kernel event model shared by every source.
 //!
 //! The full [`Event`] schema is what the pipeline (store, process tree,
-//! policy) consumes. Today only the deterministic simulator and the replay
-//! corpus can fill it completely: the eBPF probes emit identity fields only
-//! ([`KernelRecord`]), which userspace widens into [`Event`] using the
-//! documented sentinels — no argument/path/host data is invented.
+//! policy) consumes. The eBPF probes emit a compact [`KernelRecord`] with
+//! best-effort evidence read at the tracepoint: executable filename, open
+//! path/flags, and numeric connect destination. Userspace widens it into
+//! [`Event`], using documented sentinels only when a kernel read failed.
 
 use serde::{Deserialize, Serialize};
 
@@ -105,28 +105,27 @@ pub const KERNEL_UNKNOWN_CGROUP_ID: u64 = 0;
 /// own `INVALID_UID` overflow sentinel (`(uid_t)-1`).
 pub const KERNEL_UNKNOWN_UID: u32 = u32::MAX;
 
-/// Identity-only wire record: exactly one JSON object as emitted by the eBPF
-/// probes into the `EVENTS` RingBuf (see `bpf/asg-ebpf/src/main.rs::emit`):
+/// Kernel wire record: exactly one JSON object as emitted by the eBPF probes
+/// into the `EVENTS` RingBuf (see `bpf/asg-ebpf/src/main.rs`):
 ///
 /// ```json
-/// {"type":"proc_exec","pid":1,"tgid":1,"comm":"bash","ts_ns":0}
+/// {"type":"file_open","pid":1,"tgid":1,"comm":"cat","ts_ns":0,"path":".env","flags":0}
 /// ```
 ///
-/// The kernel cannot supply richer fields yet — argv/open paths/connect
-/// destinations are userspace pointers that need `bpf_probe_read_user*`
-/// access, and ppid/cgroup need extra helpers — so [`KernelRecord::widen`]
-/// fills the remaining [`Event`] fields with fixed sentinels instead of
-/// fabricated observations. Each choice is chosen to be inert downstream:
+/// Evidence fields are optional because tracepoint user-memory reads can fail
+/// (for example, an invalid syscall pointer) and older v0.1 probe objects emit
+/// identity-only records. [`KernelRecord::widen`] fills only missing fields
+/// with inert sentinels instead of fabricating observations:
 ///
 /// | Field | Sentinel | Why it is defensible |
 /// |---|---|---|
 /// | `ppid` | [`KERNEL_UNKNOWN_PPID`] (`0`) | pid 0 is never a userspace parent; tree building shows an unknown root |
 /// | `cgroup_id` | [`KERNEL_UNKNOWN_CGROUP_ID`] (`0`) | real cgroup ids are nonzero; no false attribution to a container |
-/// | `args` | empty vec | honest absence of argv; nothing invented for evidence output |
+/// | `args` | empty vec | honest absence of an executable filename |
 /// | `uid` | [`KERNEL_UNKNOWN_UID`] (`u32::MAX`) | mirrors the kernel's own `INVALID_UID` sentinel |
 /// | `path` | empty string | secret-path globs cannot match `""`, so no synthetic `SECRET_ACCESS` can fire |
-/// | `flags` | `0` | indistinguishable from `O_RDONLY`; a documented lossy placeholder until arg extraction lands |
-/// | `is_write_hint` | `false` | no read/write direction is claimed |
+/// | `flags` | `0` | only used when the optional field was actually captured |
+/// | `is_write_hint` | `false` | no read/write direction is claimed without captured flags |
 /// | `daddr` | empty string | host rules cannot match `""`, so no synthetic `NET_*` violation can fire |
 /// | `dport` | `0` | port 0 is reserved and never a valid connect destination |
 /// | `family` | empty string | address family genuinely unknown |
@@ -144,52 +143,72 @@ pub struct KernelRecord {
     pub tgid: u32,
     pub comm: String,
     pub ts_ns: u64,
+    /// Executable filename captured from `sched_process_exec`. This is not
+    /// the complete argv vector, so the probe emits it as `args[0]`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub uid: Option<u32>,
+    #[serde(default)]
+    pub cgroup_id: Option<u64>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub flags: Option<u32>,
+    /// True when the open path filled the fixed capture buffer.
+    #[serde(default)]
+    pub path_truncated: bool,
+    #[serde(default)]
+    pub daddr: Option<String>,
+    #[serde(default)]
+    pub dport: Option<u16>,
+    #[serde(default)]
+    pub family: Option<String>,
 }
 
 impl KernelRecord {
-    /// Widens an identity-only kernel record into a full [`Event`], applying
-    /// the sentinel values documented on this struct for every field the
-    /// probes cannot observe yet.
+    /// Widens a kernel record into a full [`Event`], applying the sentinel
+    /// values documented on this struct for evidence the probe could not read.
     ///
     /// Returns `None` for discriminators the kernel source cannot produce
     /// (anything other than `proc_exec`, `file_open`, `net_connect`);
     /// callers must treat such records as malformed/dropped.
     pub fn widen(&self) -> Option<Event> {
-        let Self {
-            kind,
-            pid,
-            tgid,
-            comm,
-            ts_ns,
-        } = self;
-        match kind.as_str() {
+        match self.kind.as_str() {
             "proc_exec" => Some(Event::ProcExec {
-                pid: *pid,
-                tgid: *tgid,
+                pid: self.pid,
+                tgid: self.tgid,
                 ppid: KERNEL_UNKNOWN_PPID,
-                cgroup_id: KERNEL_UNKNOWN_CGROUP_ID,
-                comm: comm.clone(),
-                args: Vec::new(),
-                uid: KERNEL_UNKNOWN_UID,
-                ts_ns: *ts_ns,
+                cgroup_id: self.cgroup_id.unwrap_or(KERNEL_UNKNOWN_CGROUP_ID),
+                comm: self.comm.clone(),
+                args: self.args.clone(),
+                uid: self.uid.unwrap_or(KERNEL_UNKNOWN_UID),
+                ts_ns: self.ts_ns,
             }),
-            "file_open" => Some(Event::FileOpen {
-                pid: *pid,
-                tgid: *tgid,
-                comm: comm.clone(),
-                path: String::new(),
-                flags: 0,
-                ts_ns: *ts_ns,
-                is_write_hint: false,
-            }),
+            "file_open" => {
+                let flags = self.flags.unwrap_or(0);
+                let mut path = self.path.clone().unwrap_or_default();
+                if self.path_truncated {
+                    path.push_str("<truncated>");
+                }
+                Some(Event::FileOpen {
+                    pid: self.pid,
+                    tgid: self.tgid,
+                    comm: self.comm.clone(),
+                    path,
+                    flags,
+                    ts_ns: self.ts_ns,
+                    is_write_hint: self.flags.is_some() && flags & 0b11 != 0,
+                })
+            }
             "net_connect" => Some(Event::NetConnect {
-                pid: *pid,
-                tgid: *tgid,
-                comm: comm.clone(),
-                daddr: String::new(),
-                dport: 0,
-                family: String::new(),
-                ts_ns: *ts_ns,
+                pid: self.pid,
+                tgid: self.tgid,
+                comm: self.comm.clone(),
+                daddr: self.daddr.clone().unwrap_or_default(),
+                dport: self.dport.unwrap_or(0),
+                family: self.family.clone().unwrap_or_default(),
+                ts_ns: self.ts_ns,
             }),
             _ => None,
         }
@@ -286,6 +305,63 @@ mod tests {
                 ts_ns: 2,
             })
         );
+    }
+
+    #[test]
+    fn widens_captured_kernel_evidence() {
+        let exec: KernelRecord = serde_json::from_str(
+            r#"{"type":"proc_exec","pid":7,"tgid":7,"comm":"node","ts_ns":1,"uid":1000,"cgroup_id":42,"args":["/usr/bin/node"]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            exec.widen(),
+            Some(Event::ProcExec {
+                uid: 1000,
+                cgroup_id: 42,
+                args,
+                ..
+            }) if args == ["/usr/bin/node"]
+        ));
+
+        let open: KernelRecord = serde_json::from_str(
+            r#"{"type":"file_open","pid":7,"tgid":7,"comm":"cat","ts_ns":2,"path":"/home/dev/.env","flags":2}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            open.widen(),
+            Some(Event::FileOpen {
+                path,
+                flags: 2,
+                is_write_hint: true,
+                ..
+            }) if path == "/home/dev/.env"
+        ));
+
+        let connect: KernelRecord = serde_json::from_str(
+            r#"{"type":"net_connect","pid":7,"tgid":7,"comm":"curl","ts_ns":3,"daddr":"203.0.113.9","dport":443,"family":"IPv4"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            connect.widen(),
+            Some(Event::NetConnect {
+                daddr,
+                dport: 443,
+                family,
+                ..
+            }) if daddr == "203.0.113.9" && family == "IPv4"
+        ));
+    }
+
+    #[test]
+    fn marks_truncated_kernel_paths() {
+        let open: KernelRecord = serde_json::from_str(
+            r#"{"type":"file_open","pid":7,"tgid":7,"comm":"cat","ts_ns":2,"path":"/very/long","flags":0,"path_truncated":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            open.widen(),
+            Some(Event::FileOpen { path, .. }) if path == "/very/long<truncated>"
+        ));
     }
 
     #[test]

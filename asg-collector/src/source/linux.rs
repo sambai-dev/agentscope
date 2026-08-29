@@ -1,14 +1,12 @@
 //! Real eBPF kernel source: loads `bpf/asg.bpf.o`, attaches tracepoints and
 //! forwards RingBuf payloads onto the ingest channel.
 //!
-//! Wire format is one identity-only [`KernelRecord`] per ring buffer record —
-//! exactly the JSON the probes emit (`type`/`pid`/`tgid`/`comm`/`ts_ns`);
-//! JSON keeps both sides dependency-free at an honest throughput tradeoff
-//! documented in `bpf/README.md`. Each parsed record is widened into a full
-//! [`Event`] via [`KernelRecord::widen`] using the sentinel values documented
-//! in `asg-common/src/events.rs`: fields the kernel cannot observe yet are
-//! filled with inert placeholders (empty path/args/daddr, unknown-parent pid
-//! 0, `INVALID_UID`) — never fabricated observation data.
+//! Wire format is one [`KernelRecord`] per ring buffer record. The v0.2 probe
+//! reserves a fixed 512-byte slot and writes zero-padded JSON containing
+//! best-effort executable, open-path and numeric network evidence. Older v0.1
+//! variable-length identity-only records remain accepted. Each parsed record
+//! is widened into a full [`Event`] with inert sentinels only for evidence the
+//! kernel probe could not read.
 //!
 //! Records that fail to parse or claim an unproducible kind are counted in
 //! [`SourceRecordStats`] (rendered as `asg_source_records_*_total` on
@@ -124,10 +122,15 @@ enum RecordError {
 }
 
 /// Decodes one raw ring-buffer record into an [`Event`]: parses the
-/// identity-only [`KernelRecord`] the probes write, then widens it with the
-/// sentinel values documented in `asg-common/src/events.rs`.
+/// [`KernelRecord`] the probes write, then widens it with the sentinel values
+/// documented in `asg-common/src/events.rs`.
 fn decode_record(raw: &[u8]) -> Result<Event, RecordError> {
-    let record: KernelRecord = serde_json::from_slice(raw)?;
+    // v0.2 writes directly into a fixed-size ring reservation. JSON never
+    // contains literal NUL bytes (the probe escapes them), so the first zero
+    // unambiguously starts padding. Keeping the no-NUL path preserves
+    // compatibility with v0.1 variable-length probe objects.
+    let payload = raw.split(|byte| *byte == 0).next().unwrap_or_default();
+    let record: KernelRecord = serde_json::from_slice(payload)?;
     record
         .widen()
         .ok_or_else(|| RecordError::UnproducibleKind(record.kind.clone()))
@@ -189,6 +192,22 @@ mod tests {
         assert_eq!(ppid, asg_common::events::KERNEL_UNKNOWN_PPID);
         assert!(args.is_empty());
         assert_eq!(uid, asg_common::events::KERNEL_UNKNOWN_UID);
+    }
+
+    #[test]
+    fn trims_fixed_ring_padding_and_decodes_evidence() {
+        let json = br#"{"type":"file_open","pid":1,"tgid":2,"comm":"cat","ts_ns":9,"path":"/workspace/.env","flags":0}"#;
+        let mut padded = vec![0u8; 512];
+        padded[..json.len()].copy_from_slice(json);
+        let event = decode_record(&padded).unwrap();
+        assert!(matches!(
+            event,
+            Event::FileOpen {
+                path,
+                flags: 0,
+                ..
+            } if path == "/workspace/.env"
+        ));
     }
 
     #[test]

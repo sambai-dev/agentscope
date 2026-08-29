@@ -47,4 +47,4 @@ jobs:
         continue-on-error: false
         # .cargo/config.toml pins the target + build-std=core (prebuilt
         # bpfel-unknown-none rust-std is no longer shipped on nightlies)
-        run: cargo +nightly build --release -Z build-std
+        run: cargo +nightly build --locked --release -Z build-std

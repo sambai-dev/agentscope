@@ -31,8 +31,30 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build asg-cli (agentscope)
         run: cargo build --release --target ${{ matrix.target }} -p asg-cli
-      - name: Package (unix)
-        if: matrix.os != 'windows-latest'
+
+      - name: Install eBPF build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          rustup toolchain install nightly --component rust-src
+          sudo apt-get update
+          sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18 lld-18
+          LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo install bpf-linker --version 0.9.13 --locked
+
+      - name: Build eBPF probe
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: bpf/asg-ebpf
+        run: cargo +nightly build --locked --release -Z build-std
+
+      - name: Package (Linux, including eBPF probe)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/agentscope dist/
+          cp bpf/asg-ebpf/target/bpfel-unknown-none/release/asg-ebpf dist/asg.bpf.o
+          tar czf agentscope-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C dist agentscope asg.bpf.o
+
+      - name: Package (macOS)
+        if: matrix.os == 'macos-latest'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../agentscope-${{ github.ref_name }}-${{ matrix.target }}.tar.gz agentscope

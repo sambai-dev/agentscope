@@ -19,9 +19,11 @@ pub struct RuleSet {
     pub secret_path_globs: Vec<String>,
     /// Process basenames agents are never allowed to execute.
     pub denied_processes: Vec<String>,
-    /// Destination hosts that trigger a critical network violation.
+    /// Destination host globs, exact IPs, or CIDRs that trigger a critical
+    /// network violation.
     pub denied_hosts: Vec<String>,
-    /// Destination hosts that trigger a medium-severity warning.
+    /// Destination host globs, exact IPs, or CIDRs that trigger a
+    /// medium-severity warning.
     pub warn_hosts: Vec<String>,
     /// Ingest backpressure ceiling per second.
     pub max_events_per_sec: u32,
