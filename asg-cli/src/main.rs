@@ -35,7 +35,7 @@ enum Command {
         port: u16,
         #[arg(long, value_enum, default_value_t = SourceArg::Simulated)]
         source: SourceArg,
-        #[arg(long, default_value = "bpf/asg.bpf.o")]
+        #[arg(long, default_value = "asg.bpf.o")]
         bpf_path: String,
     },
     /// Feed a JSONL event corpus through the ingest pipeline and exit.

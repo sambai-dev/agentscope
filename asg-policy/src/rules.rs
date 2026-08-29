@@ -4,6 +4,7 @@ use crate::{Severity, Violation};
 use asg_common::events::Event;
 use asg_common::policy_types::RuleSet;
 use serde_json::json;
+use std::net::IpAddr;
 
 /// Extracts the final path component treating both `/` and `\` as separators.
 pub fn basename(path: &str) -> &str {
@@ -123,7 +124,7 @@ fn eval_net_connect(
     let denied = rules
         .denied_hosts
         .iter()
-        .find(|h| crate::glob::matches(h, daddr));
+        .find(|h| destination_matches(h, daddr));
     if let Some(host) = denied {
         return vec![Violation {
             rule_id: "NET_DENIED".to_string(),
@@ -138,7 +139,7 @@ fn eval_net_connect(
     let warned = rules
         .warn_hosts
         .iter()
-        .find(|h| crate::glob::matches(h, daddr));
+        .find(|h| destination_matches(h, daddr));
     if let Some(host) = warned {
         return vec![Violation {
             rule_id: "NET_WARN".to_string(),
@@ -151,6 +152,40 @@ fn eval_net_connect(
         }];
     }
     Vec::new()
+}
+
+/// Matches a destination against either an IP CIDR or the existing hostname/
+/// address glob syntax. Kernel-sourced connect events carry numeric IPs, while
+/// replay and application-sourced events may still carry DNS names.
+fn destination_matches(pattern: &str, destination: &str) -> bool {
+    if let Some((network, prefix)) = pattern.split_once('/') {
+        if let (Ok(network), Ok(destination), Ok(prefix)) = (
+            network.parse::<IpAddr>(),
+            destination.parse::<IpAddr>(),
+            prefix.parse::<u8>(),
+        ) {
+            return match (network, destination) {
+                (IpAddr::V4(network), IpAddr::V4(destination)) if prefix <= 32 => {
+                    let mask = if prefix == 0 {
+                        0
+                    } else {
+                        u32::MAX << (32 - prefix)
+                    };
+                    u32::from(network) & mask == u32::from(destination) & mask
+                }
+                (IpAddr::V6(network), IpAddr::V6(destination)) if prefix <= 128 => {
+                    let mask = if prefix == 0 {
+                        0
+                    } else {
+                        u128::MAX << (128 - prefix)
+                    };
+                    u128::from(network) & mask == u128::from(destination) & mask
+                }
+                _ => false,
+            };
+        }
+    }
+    crate::glob::matches(pattern, destination)
 }
 
 /// Normalizes a path for glob matching against secret path patterns.
@@ -333,6 +368,47 @@ mod tests {
     }
 
     #[test]
+    fn numeric_kernel_destinations_support_ipv4_and_ipv6_cidrs() {
+        let rules = RuleSet {
+            denied_hosts: vec!["203.0.113.0/24".into(), "2001:db8:dead::/48".into()],
+            ..RuleSet::default()
+        };
+
+        for (daddr, family) in [("203.0.113.91", "IPv4"), ("2001:db8:dead:beef::1", "IPv6")] {
+            let event = Event::NetConnect {
+                pid: 1,
+                tgid: 2,
+                comm: "curl".into(),
+                daddr: daddr.into(),
+                dport: 443,
+                family: family.into(),
+                ts_ns: 1,
+            };
+            let violations = eval(&event, &rules);
+            assert_eq!(violations.len(), 1, "{daddr} must match its CIDR");
+            assert_eq!(violations[0].rule_id, "NET_DENIED");
+        }
+
+        let outside = Event::NetConnect {
+            pid: 1,
+            tgid: 2,
+            comm: "curl".into(),
+            daddr: "203.0.114.1".into(),
+            dport: 443,
+            family: "IPv4".into(),
+            ts_ns: 1,
+        };
+        assert!(eval(&outside, &rules).is_empty());
+    }
+
+    #[test]
+    fn malformed_cidr_does_not_match_numeric_destination() {
+        assert!(!destination_matches("203.0.113.0/99", "203.0.113.1"));
+        assert!(!destination_matches("2001:db8::/129", "2001:db8::1"));
+        assert!(destination_matches("203.0.*", "203.0.113.1"));
+    }
+
+    #[test]
     fn cap_escalation_high() {
         let rules = RuleSet::default();
         let e = Event::CapEscalate {
@@ -348,9 +424,10 @@ mod tests {
     }
 
     #[test]
-    fn widened_kernel_records_cannot_fabricate_path_or_host_violations() {
-        // Kernel records widen with empty path/daddr sentinels; no default
-        // rule may fire off that absence. comm-based rules still work.
+    fn legacy_kernel_records_cannot_fabricate_path_or_host_violations() {
+        // v0.1 identity-only kernel records still widen with empty path/daddr
+        // sentinels; no rule may fire from absent evidence. comm-based rules
+        // continue to work during a rolling probe/collector upgrade.
         let rules = RuleSet::default();
         for (kind, comm, expected) in [
             ("proc_exec", "npm", "PROC_DENIED"),
@@ -372,6 +449,25 @@ mod tests {
                 assert_eq!(ids, [expected], "{kind}/{comm}");
             }
         }
+    }
+
+    #[test]
+    fn captured_kernel_evidence_drives_real_policy_rules() {
+        let open: asg_common::events::KernelRecord = serde_json::from_str(
+            r#"{"type":"file_open","pid":1,"tgid":2,"comm":"cat","ts_ns":3,"path":"/workspace/.env","flags":0}"#,
+        )
+        .unwrap();
+        let violations = eval(&open.widen().unwrap(), &RuleSet::default());
+        assert_eq!(violations[0].rule_id, "SECRET_ACCESS");
+
+        let connect: asg_common::events::KernelRecord = serde_json::from_str(
+            r#"{"type":"net_connect","pid":1,"tgid":2,"comm":"curl","ts_ns":4,"daddr":"203.0.113.9","dport":443,"family":"IPv4"}"#,
+        )
+        .unwrap();
+        let mut rules = RuleSet::default();
+        rules.denied_hosts.push("203.0.113.0/24".into());
+        let violations = eval(&connect.widen().unwrap(), &rules);
+        assert_eq!(violations[0].rule_id, "NET_DENIED");
     }
 
     #[test]

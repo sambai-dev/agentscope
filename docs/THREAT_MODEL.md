@@ -108,24 +108,19 @@ C3. binary elevates privileges              → CAP_ESCALATION (simulated/replay
 | Rule id | Severity | Trigger | Probe | Example evidence |
 | --- | --- | --- | --- | --- |
 | `PROC_DENIED` | critical | comm basename in `denied_processes` | sched_process_exec | `{comm, args}` † |
-| `SECRET_ACCESS` | critical | open path matches `secret_path_globs` | sys_enter_openat | `{path, matched_globs}` † |
-| `NET_DENIED` | critical | daddr matches `denied_hosts` | sys_enter_connect | `{host, dport}` † |
-| `NET_WARN` | medium | daddr matches `warn_hosts` | sys_enter_connect | `{host, dport}` † |
+| `SECRET_ACCESS` | critical | open path matches `secret_path_globs` | sys_enter_openat | `{path, matched_globs}` |
+| `NET_DENIED` | critical | numeric IP matches exact/glob/CIDR policy | sys_enter_connect | `{host, dport}` |
+| `NET_WARN` | medium | numeric IP matches exact/glob/CIDR policy | sys_enter_connect | `{host, dport}` |
 | `CAP_ESCALATION` | high | capability escalation observed | simulated/replay only (eBPF probe: roadmap) | `{caps}` |
 
-† **Not producible by the kernel source yet.** eBPF ring records carry
-identity fields only (`type`/`pid`/`tgid`/`comm`/`ts_ns`); userspace widens
-them into the full event schema with inert sentinels (empty `args`, `path`,
-`daddr`; see `asg-common::events::KernelRecord::widen`) rather than inventing
-observation data. Consequences today:
+† Kernel mode supplies the executable filename as `args[0]`, not a complete
+argv vector. It also captures uid and cgroup id. The open and connect probes
+read userspace syscall arguments with bounded helpers; failed reads retain an
+identity-only event with inert sentinels instead of fabricating evidence.
 
-- `args`, `path`, and `daddr`/`dport` evidence appears only for
-  simulator/replay-sourced events until tracepoint argument extraction lands.
-- `SECRET_ACCESS`, `NET_DENIED` and `NET_WARN` therefore cannot fire on
-  kernel-sourced events; their triggers depend on the marked evidence fields,
-  which are empty placeholders from that source.
-- `PROC_DENIED` *does* fire on kernel events: its trigger is the `comm`
-  basename, which the probes do capture (evidence shows `args: []`).
+Kernel `connect()` evidence is a numeric IPv4/IPv6 address. Exact IPs, address
+globs, and CIDRs are enforceable. DNS hostname rules require correlation
+outside the syscall and do not match a numeric kernel event.
 
 ## 6. Guarantees
 

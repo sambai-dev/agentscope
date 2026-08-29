@@ -1,15 +1,15 @@
 [package]
 name = "asg-ebpf"
 description = "AgentScope eBPF probes: exec, connect and openat tracepoints"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
 publish = false
 
 [dependencies]
-aya-ebpf = { version = "0.1" }
-aya-log-ebpf = { version = "0.1" }
+aya-ebpf = { version = "0.2" }
+aya-log-ebpf = { version = "0.2" }
 
 [[bin]]
 name = "asg-ebpf"

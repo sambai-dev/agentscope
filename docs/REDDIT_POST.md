@@ -50,9 +50,10 @@ volumes; the kernel ring is sized well below what userspace can drain.
 
 **Honest gaps** (threat model in repo): no payload inspection (encrypted
 traffic is opaque), root can unload the probes, path rules have TOCTOU
-windows, enforcement/deny is roadmap (today: observe + alert), and the
-kernel probes currently emit identity fields only — argument extraction is
-in progress, the simulator covers the full event schema meanwhile.
+windows, enforcement/deny is roadmap (today: observe + alert), exec capture
+contains the executable filename rather than full argv, and kernel connect
+events expose numeric IPs rather than DNS names. Open paths and IPv4/IPv6
+destinations are captured from real syscall arguments.
 
 Repo: https://github.com/sambai-dev/agentscope
 Run it: `cargo run -p asg-cli -- serve` → http://localhost:8100
